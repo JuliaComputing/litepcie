@@ -23,6 +23,7 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <cuda.h>
 
 #include "litepcie.h"
 #include "config.h"
