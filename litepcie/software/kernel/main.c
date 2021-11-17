@@ -36,6 +36,7 @@
 #include "csr.h"
 #include "config.h"
 #include "flags.h"
+#include "nv-p2p.h"
 
 //#define DEBUG_CSR
 //#define DEBUG_MSI
