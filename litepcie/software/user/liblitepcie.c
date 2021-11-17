@@ -58,6 +58,10 @@ void litepcie_reload(int fd) {
     ioctl(fd, LITEPCIE_IOCTL_ICAP, &m);
 }
 
+void litepcie_dma_init(int fd) {
+    ioctl(fd, LITEPCIE_IOCTL_DMA_INIT, NULL);
+}
+
 void litepcie_dma(int fd, uint8_t loopback_enable) {
     struct litepcie_ioctl_dma m;
     m.loopback_enable = loopback_enable;

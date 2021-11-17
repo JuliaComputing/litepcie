@@ -78,6 +78,7 @@ struct litepcie_ioctl_mmap_dma_update {
 #define LITEPCIE_IOCTL_FLASH             _IOWR(LITEPCIE_IOCTL,  1, struct litepcie_ioctl_flash)
 #define LITEPCIE_IOCTL_ICAP              _IOWR(LITEPCIE_IOCTL,  2, struct litepcie_ioctl_icap)
 
+#define LITEPCIE_IOCTL_DMA_INIT                  _IO(LITEPCIE_IOCTL,  19)
 #define LITEPCIE_IOCTL_DMA                       _IOW(LITEPCIE_IOCTL,  20, struct litepcie_ioctl_dma)
 #define LITEPCIE_IOCTL_DMA_WRITER                _IOWR(LITEPCIE_IOCTL, 21, struct litepcie_ioctl_dma_writer)
 #define LITEPCIE_IOCTL_DMA_READER                _IOWR(LITEPCIE_IOCTL, 22, struct litepcie_ioctl_dma_reader)

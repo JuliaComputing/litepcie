@@ -354,6 +354,9 @@ static void dma_test(void)
         exit(1);
     }
 
+    /* start dma */
+    litepcie_dma_init(fds.fd);
+
     /* request dma */
     if ((litepcie_request_dma_reader(fds.fd) == 0) |
         (litepcie_request_dma_writer(fds.fd) == 0)) {

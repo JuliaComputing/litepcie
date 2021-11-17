@@ -140,6 +140,10 @@ static void litepcie_disable_interrupt(struct litepcie_device *s, int irq_num)
 	litepcie_writel(s, CSR_PCIE_MSI_ENABLE_ADDR, v);
 }
 
+/*
+ * For Nvidia P2P this will be replaced with p2p_get_pages
+ *
+ */
 static int litepcie_dma_init(struct litepcie_device *s)
 {
 
@@ -682,6 +686,12 @@ static long litepcie_ioctl(struct file *file, unsigned int cmd,
 	}
 	break;
 #endif
+	case LITEPCIE_IOCTL_DMA_INIT:
+	{
+		/* allocate all dma buffers */
+		ret = litepcie_dma_init(chan->litepcie_dev);
+		break;
+	}
 	case LITEPCIE_IOCTL_DMA:
 	{
 		struct litepcie_ioctl_dma m;
@@ -1129,13 +1139,6 @@ static int litepcie_pci_probe(struct pci_dev *dev, const struct pci_device_id *i
 			}
 			break;
 		}
-	}
-
-	/* allocate all dma buffers */
-	ret = litepcie_dma_init(litepcie_dev);
-	if (ret) {
-		dev_err(&dev->dev, "Failed to allocate DMA\n");
-		goto fail3;
 	}
 
 	return 0;

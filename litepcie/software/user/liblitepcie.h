@@ -18,6 +18,7 @@ uint32_t litepcie_readl(int fd, uint32_t addr);
 void litepcie_writel(int fd, uint32_t addr, uint32_t val);
 void litepcie_reload(int fd);
 
+void litepcie_dma_init(int fd);
 void litepcie_dma(int fd, uint8_t loopback_enable);
 void litepcie_dma_reader(int fd, uint8_t enable, int64_t *hw_count, int64_t *sw_count);
 void litepcie_dma_writer(int fd, uint8_t enable, int64_t *hw_count, int64_t *sw_count);
