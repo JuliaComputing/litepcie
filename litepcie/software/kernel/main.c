@@ -90,6 +90,8 @@ struct litepcie_device {
 	int minor_base;
 	int irqs;
 	int channels;
+
+	uint8_t dma_initialized;
 };
 
 struct litepcie_chan_priv {
@@ -152,6 +154,8 @@ static int litepcie_dma_init(struct litepcie_device *s)
 
 	if (!s)
 		return -ENODEV;
+	if (s->dma_initialized)
+		return -EINVAL;
 
 	/* for each dma channel */
 	for (i = 0; i < s->channels; i++) {
@@ -179,13 +183,19 @@ static int litepcie_dma_init(struct litepcie_device *s)
 		}
 	}
 
+	s->dma_initialized = 1;
 	return 0;
 }
 
-static void litepcie_dma_writer_start(struct litepcie_device *s, int chan_num)
+static int litepcie_dma_writer_start(struct litepcie_device *s, int chan_num)
 {
 	struct litepcie_dma_chan *dmachan;
 	int i;
+
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
 
 	dmachan = &s->chan[chan_num].dma;
 
@@ -212,11 +222,18 @@ static void litepcie_dma_writer_start(struct litepcie_device *s, int chan_num)
 
 	/* start dma writer */
 	litepcie_writel(s, dmachan->base + PCIE_DMA_WRITER_ENABLE_OFFSET, 1);
+
+	return 0;
 }
 
-static void litepcie_dma_writer_stop(struct litepcie_device *s, int chan_num)
+static int litepcie_dma_writer_stop(struct litepcie_device *s, int chan_num)
 {
 	struct litepcie_dma_chan *dmachan;
+
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
 
 	dmachan = &s->chan[chan_num].dma;
 
@@ -231,12 +248,19 @@ static void litepcie_dma_writer_stop(struct litepcie_device *s, int chan_num)
 	dmachan->writer_hw_count = 0;
 	dmachan->writer_hw_count_last = 0;
 	dmachan->writer_sw_count = 0;
+
+	return 0;
 }
 
-static void litepcie_dma_reader_start(struct litepcie_device *s, int chan_num)
+static int litepcie_dma_reader_start(struct litepcie_device *s, int chan_num)
 {
 	struct litepcie_dma_chan *dmachan;
 	int i;
+
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
 
 	dmachan = &s->chan[chan_num].dma;
 
@@ -263,11 +287,18 @@ static void litepcie_dma_reader_start(struct litepcie_device *s, int chan_num)
 
 	/* start dma reader */
 	litepcie_writel(s, dmachan->base + PCIE_DMA_READER_ENABLE_OFFSET, 1);
+
+	return 0;
 }
 
-static void litepcie_dma_reader_stop(struct litepcie_device *s, int chan_num)
+static int litepcie_dma_reader_stop(struct litepcie_device *s, int chan_num)
 {
 	struct litepcie_dma_chan *dmachan;
+
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
 
 	dmachan = &s->chan[chan_num].dma;
 
@@ -282,6 +313,8 @@ static void litepcie_dma_reader_stop(struct litepcie_device *s, int chan_num)
 	dmachan->reader_hw_count = 0;
 	dmachan->reader_hw_count_last = 0;
 	dmachan->reader_sw_count = 0;
+
+	return 0;
 }
 
 void litepcie_stop_dma(struct litepcie_device *s)
@@ -433,6 +466,11 @@ static ssize_t litepcie_read(struct file *file, char __user *data, size_t size, 
 	struct litepcie_chan *chan = chan_priv->chan;
 	struct litepcie_device *s = chan->litepcie_dev;
 
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
+
 	if (file->f_flags & O_NONBLOCK) {
 		if (chan->dma.writer_hw_count == chan->dma.writer_sw_count)
 			ret = -EAGAIN;
@@ -488,6 +526,11 @@ static ssize_t litepcie_write(struct file *file, const char __user *data, size_t
 	struct litepcie_chan *chan = chan_priv->chan;
 	struct litepcie_device *s = chan->litepcie_dev;
 
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
+
 	if (file->f_flags & O_NONBLOCK) {
 		if (chan->dma.reader_hw_count == chan->dma.reader_sw_count)
 			ret = -EAGAIN;
@@ -537,6 +580,11 @@ static int litepcie_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long pfn;
 	int is_tx, i;
 
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
+
 	if (vma->vm_end - vma->vm_start != DMA_BUFFER_TOTAL_SIZE)
 		return -EINVAL;
 
@@ -572,9 +620,12 @@ static unsigned int litepcie_poll(struct file *file, poll_table *wait)
 
 	struct litepcie_chan_priv *chan_priv = file->private_data;
 	struct litepcie_chan *chan = chan_priv->chan;
-#ifdef DEBUG_POLL
 	struct litepcie_device *s = chan->litepcie_dev;
-#endif
+
+	if (!s)
+		return -ENODEV;
+	if (!s->dma_initialized)
+		return -EINVAL;
 
 	poll_wait(file, &chan->wait_rd, wait);
 	poll_wait(file, &chan->wait_wr, wait);
@@ -762,11 +813,13 @@ static long litepcie_ioctl(struct file *file, unsigned int cmd,
 		if (m.enable != chan->dma.reader_enable) {
 			/* enable / disable DMA */
 			if (m.enable) {
-				litepcie_dma_reader_start(chan->litepcie_dev, chan->index);
+				ret = litepcie_dma_reader_start(chan->litepcie_dev, chan->index);
+				if (ret != 0)
+					break;
 				litepcie_enable_interrupt(chan->litepcie_dev, chan->dma.reader_interrupt);
 			} else {
 				litepcie_disable_interrupt(chan->litepcie_dev, chan->dma.reader_interrupt);
-				litepcie_dma_reader_stop(chan->litepcie_dev, chan->index);
+				ret = litepcie_dma_reader_stop(chan->litepcie_dev, chan->index);
 			}
 		}
 
@@ -1173,7 +1226,8 @@ static void litepcie_pci_remove(struct pci_dev *dev)
 	dev_info(&dev->dev, "\e[1m[Removing device]\e[0m\n");
 
 	/* Stop the DMAs */
-	litepcie_stop_dma(litepcie_dev);
+	if (litepcie_dev->dma_initialized)
+		litepcie_stop_dma(litepcie_dev);
 
 	/* Disable all interrupts */
 	litepcie_writel(litepcie_dev, CSR_PCIE_MSI_ENABLE_ADDR, 0);
