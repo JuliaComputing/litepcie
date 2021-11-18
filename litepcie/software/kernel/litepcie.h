@@ -35,7 +35,8 @@ struct litepcie_ioctl_icap {
 
 struct litepcie_ioctl_dma_init {
 	uint8_t use_gpu;
-	// TODO: pointer to allocated GPU buffer
+	uint64_t gpu_addr;
+	uint64_t gpu_size;
 };
 
 struct litepcie_ioctl_dma {

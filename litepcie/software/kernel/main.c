@@ -48,13 +48,23 @@
 #define LITEPCIE_MINOR_COUNT 32
 
 struct litepcie_dma_chan {
+	// whether this DMA channel is backed by the GPU or not.
+	uint8_t is_gpu;
+
 	uint32_t base;
 	uint32_t writer_interrupt;
 	uint32_t reader_interrupt;
+
+	// the physical (?) addresses that can be passed to the hardware
 	dma_addr_t reader_handle[DMA_BUFFER_COUNT];
 	dma_addr_t writer_handle[DMA_BUFFER_COUNT];
+
+	// the virtual CPU addresses pointing to the allocated DMA memory.
+	// if backed by the GPU, these addresses are not available
+	// (use zero-copy mode; mmap'ing the GPU's physical addresses _is_ supported)
 	uint32_t *reader_addr[DMA_BUFFER_COUNT];
 	uint32_t *writer_addr[DMA_BUFFER_COUNT];
+
 	int64_t reader_hw_count;
 	int64_t reader_hw_count_last;
 	int64_t reader_sw_count;
@@ -92,6 +102,8 @@ struct litepcie_device {
 	int channels;
 
 	uint8_t dma_initialized;
+	uint64_t gpu_virt_start;	// start page address of the virtual memory
+	nvidia_p2p_page_table_t *gpu_page_table;
 };
 
 struct litepcie_chan_priv {
@@ -142,13 +154,8 @@ static void litepcie_disable_interrupt(struct litepcie_device *s, int irq_num)
 	litepcie_writel(s, CSR_PCIE_MSI_ENABLE_ADDR, v);
 }
 
-/*
- * For Nvidia P2P this will be replaced with p2p_get_pages
- *
- */
-static int litepcie_dma_init(struct litepcie_device *s)
+static int litepcie_dma_init_cpu(struct litepcie_device *s)
 {
-
 	int i, j;
 	struct litepcie_dma_chan *dmachan;
 
@@ -160,6 +167,7 @@ static int litepcie_dma_init(struct litepcie_device *s)
 	/* for each dma channel */
 	for (i = 0; i < s->channels; i++) {
 		dmachan = &s->chan[i].dma;
+		dmachan->is_gpu = 0;
 		/* for each dma buffer */
 		for (j = 0; j < DMA_BUFFER_COUNT; j++) {
 			/* allocate rd */
@@ -185,6 +193,107 @@ static int litepcie_dma_init(struct litepcie_device *s)
 
 	s->dma_initialized = 1;
 	return 0;
+}
+
+// NVIDIA GPUs use 64K pages
+#define GPU_PAGE_SHIFT		16
+#define GPU_PAGE_SIZE		(1UL << GPU_PAGE_SHIFT)
+#define GPU_PAGE_OFFSET		(GPU_PAGE_SIZE - 1)
+#define GPU_PAGE_MASK		(~GPU_PAGE_OFFSET)
+
+// callback for when the GPU memory needs to be unlocked
+// (e.g. because the userspace process exited)
+void litepcie_dma_free_gpu(void *data) {
+	int res;
+	struct litepcie_device *s = (struct litepcie_device *)data;
+	if (s) {
+		res = nvidia_p2p_free_page_table(s->gpu_page_table);
+		if (res == 0) {
+			s->dma_initialized = 0;
+		} else {
+			dev_err(&s->dev->dev, "Error in nvidia_p2p_free_page_table()\n");
+		}
+	}
+}
+
+static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint64_t size)
+{
+	int error;
+	int i, j;
+	struct litepcie_dma_chan *dmachan;
+	size_t pin_size;
+	int page, offset;
+	struct nvidia_p2p_page * nvp;
+
+	if (!s)
+		return -ENODEV;
+	if (s->dma_initialized)
+		return -EINVAL;
+
+	// alignment as required by the NVIDIA driver
+	s->gpu_virt_start = (addr & GPU_PAGE_MASK);
+	pin_size = addr + size - s->gpu_virt_start;
+	if (!pin_size) {
+		dev_err(&s->dev->dev, "Error invalid memory size!\n");
+		error = -EINVAL;
+		goto do_exit;
+	}
+
+	// make the virtual memory accessible to other devices
+	error = nvidia_p2p_get_pages(
+		0, 0, s->gpu_virt_start, pin_size, &s->gpu_page_table,
+		litepcie_dma_free_gpu, s);
+	if (error != 0) {
+		dev_err(&s->dev->dev, "Error in nvidia_p2p_get_pages()\n");
+		error = -EINVAL;
+		goto do_exit;
+	}
+
+	/* for each dma channel */
+	page = 0;
+	offset = 0;
+	for (i = 0; i < s->channels; i++) {
+		dmachan = &s->chan[i].dma;
+		dmachan->is_gpu = 1;
+		/* for each dma buffer */
+		for (j = 0; j < DMA_BUFFER_COUNT; j++) {
+			/* allocate rd */
+			if (offset + DMA_BUFFER_SIZE > GPU_PAGE_SIZE) {
+				page += 1;
+				offset = 0;
+			}
+			if (page > s->gpu_page_table->entries) {
+				error = -ENOMEM;
+				goto do_unlock_pages;
+			}
+			nvp = s->gpu_page_table->pages[page];
+			dmachan->reader_handle[j] = nvp->physical_address + offset;
+			/// XXX: physical address vs. dma_attr_t?
+			//       should we use nvidia_p2p_dma_map_pages?
+			offset += DMA_BUFFER_SIZE;
+
+			/* allocate wr */
+			if (offset + DMA_BUFFER_SIZE > GPU_PAGE_SIZE) {
+				page += 1;
+				offset = 0;
+			}
+			if (page > s->gpu_page_table->entries) {
+				error = -ENOMEM;
+				goto do_unlock_pages;
+			}
+			nvp = s->gpu_page_table->pages[page];
+			dmachan->writer_handle[j] = nvp->physical_address + offset;
+			offset += DMA_BUFFER_SIZE;
+		}
+	}
+
+	s->dma_initialized = 1;
+	return 0;
+
+do_unlock_pages:
+	nvidia_p2p_put_pages(0, 0, s->gpu_virt_start, s->gpu_page_table);
+do_exit:
+	return error;
 }
 
 static int litepcie_dma_writer_start(struct litepcie_device *s, int chan_num)
@@ -451,6 +560,8 @@ static int litepcie_release(struct inode *inode, struct file *file)
 		chan->dma.writer_enable = 0;
 	}
 
+	// TODO: nvidia_p2p_put_pages
+
 	kfree(chan_priv);
 
 	return 0;
@@ -470,6 +581,10 @@ static ssize_t litepcie_read(struct file *file, char __user *data, size_t size, 
 		return -ENODEV;
 	if (!s->dma_initialized)
 		return -EINVAL;
+
+	// this syscall is not supported for GPU-backed DMA channels
+	if (chan->dma.is_gpu)
+		return -EFAULT;
 
 	if (file->f_flags & O_NONBLOCK) {
 		if (chan->dma.writer_hw_count == chan->dma.writer_sw_count)
@@ -530,6 +645,10 @@ static ssize_t litepcie_write(struct file *file, const char __user *data, size_t
 		return -ENODEV;
 	if (!s->dma_initialized)
 		return -EINVAL;
+
+	// this syscall is not supported for GPU-backed DMA channels
+	if (chan->dma.is_gpu)
+		return -EFAULT;
 
 	if (file->f_flags & O_NONBLOCK) {
 		if (chan->dma.reader_hw_count == chan->dma.reader_sw_count)
@@ -596,10 +715,20 @@ static int litepcie_mmap(struct file *file, struct vm_area_struct *vma)
 		return -EINVAL;
 
 	for (i = 0; i < DMA_BUFFER_COUNT; i++) {
-		if (is_tx)
-			pfn = __pa(chan->dma.reader_addr[i]) >> PAGE_SHIFT;
-		else
-			pfn = __pa(chan->dma.writer_addr[i]) >> PAGE_SHIFT;
+		if (chan->dma.is_gpu) {
+			// with GPU-backed memory buffers, the dma_addr_t is the physaddr
+			if (is_tx)
+				pfn = chan->dma.reader_handle[i];
+			else
+				pfn = chan->dma.writer_handle[i];
+
+		} else {
+			if (is_tx)
+				pfn = __pa(chan->dma.reader_addr[i]) >> PAGE_SHIFT;
+			else
+				pfn = __pa(chan->dma.writer_addr[i]) >> PAGE_SHIFT;
+		}
+
 		/*
 		 * Note: the memory is cached, so the user must explicitly
 		 * flush the CPU caches on architectures which require it.
@@ -746,13 +875,12 @@ static long litepcie_ioctl(struct file *file, unsigned int cmd,
 			break;
 		}
 
-		if (m.use_gpu) {
-			ret = -ENOSYS;
-			break;
-		}
-
 		/* allocate all dma buffers */
-		ret = litepcie_dma_init(chan->litepcie_dev);
+		if (m.use_gpu)
+			ret = litepcie_dma_init_gpu(chan->litepcie_dev, m.gpu_addr, m.gpu_size);
+		else
+			ret = litepcie_dma_init_cpu(chan->litepcie_dev);
+
 		break;
 	}
 	case LITEPCIE_IOCTL_DMA:
