@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <cuda.h>
+#include <libexplain/ioctl.h>
 
 #include "litepcie.h"
 #include "config.h"
@@ -121,7 +122,7 @@ static void litepcie_record(const char  *filename, uint32_t size)
     /* get data buffer */
     if (litepcie_device_zero_copy) {
         /* if mmap: get it from the kernel */
-        if (ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info) != 0) {
+        if (explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info) != 0) {
             printf("LITEPCIE_IOCTL_MMAP_DMA_INFO error, exiting.\n");
             goto exit;
         }
@@ -180,7 +181,7 @@ static void litepcie_record(const char  *filename, uint32_t size)
 
                 /* update dma sw_count*/
                 mmap_dma_update.sw_count = writer_sw_count + buf_count;
-                ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE, &mmap_dma_update);
+                explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE, &mmap_dma_update);
 
             /* non zero-copy mode */
             } else {
@@ -270,7 +271,7 @@ static void litepcie_play(const char *filename, uint32_t loops)
     /* get data buffer */
     if (litepcie_device_zero_copy) {
         /* if mmap: it get it from the kernel */
-        if (ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info)) {
+        if (explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info)) {
             printf("LITEPCIE_IOCTL_MMAP_DMA_INFO error, exiting.\n");
             goto exit;
         }
@@ -344,7 +345,7 @@ static void litepcie_play(const char *filename, uint32_t loops)
 
                 /* update dma sw_count*/
                 mmap_dma_update.sw_count = reader_sw_count + buf_count;
-                ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update);
+                explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update);
 
                 first_loop = 0;
             }
