@@ -688,6 +688,18 @@ static long litepcie_ioctl(struct file *file, unsigned int cmd,
 #endif
 	case LITEPCIE_IOCTL_DMA_INIT:
 	{
+		struct litepcie_ioctl_dma_init m;
+
+		if (copy_from_user(&m, (void *)arg, sizeof(m))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		if (m.use_gpu) {
+			ret = -ENOSYS;
+			break;
+		}
+
 		/* allocate all dma buffers */
 		ret = litepcie_dma_init(chan->litepcie_dev);
 		break;

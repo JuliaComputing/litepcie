@@ -59,7 +59,9 @@ void litepcie_reload(int fd) {
 }
 
 void litepcie_dma_init(int fd) {
-    ioctl(fd, LITEPCIE_IOCTL_DMA_INIT, NULL);
+    struct litepcie_ioctl_dma_init m;
+    m.use_gpu = 0;
+    ioctl(fd, LITEPCIE_IOCTL_DMA_INIT, &m);
 }
 
 void litepcie_dma(int fd, uint8_t loopback_enable) {
