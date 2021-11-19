@@ -24,7 +24,9 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <math.h>
 #include <cuda.h>
+#include <libexplain/ioctl.h>
 
 #include "litepcie.h"
 #include "config.h"
@@ -39,6 +41,7 @@
 static char litepcie_device[1024];
 static int litepcie_device_num;
 static int cuda_device_num;
+static uint8_t litepcie_device_zero_copy;
 
 sig_atomic_t keep_running = 1;
 
@@ -315,7 +318,7 @@ static void dma_test(void)
 {
     struct pollfd fds;
     int ret;
-    int i;
+    int i, j;
     ssize_t len;
 
     int64_t reader_hw_count, reader_sw_count, reader_sw_count_last;
@@ -331,21 +334,10 @@ static void dma_test(void)
 
     char *buf_rd, *buf_wr;
 
+    struct litepcie_ioctl_mmap_dma_info mmap_dma_info;
+    struct litepcie_ioctl_mmap_dma_update mmap_dma_update;
+
     signal(SIGINT, intHandler);
-
-    buf_rd = malloc(DMA_BUFFER_TOTAL_SIZE);
-    buf_wr = malloc(DMA_BUFFER_TOTAL_SIZE);
-
-    errors = 0;
-    seed_wr = 0;
-    seed_rd = 0;
-
-    memset(buf_rd, 0, DMA_BUFFER_TOTAL_SIZE);
-    memset(buf_wr, 0, DMA_BUFFER_TOTAL_SIZE);
-
-#ifdef DMA_CHECK_DATA
-    write_pn_data((uint32_t *) buf_wr, DMA_BUFFER_TOTAL_SIZE/4, &seed_wr);
-#endif
 
     fds.fd = open(litepcie_device, O_RDWR | O_CLOEXEC);
     fds.events = POLLIN | POLLOUT;
@@ -361,12 +353,48 @@ static void dma_test(void)
     if ((litepcie_request_dma_reader(fds.fd) == 0) |
         (litepcie_request_dma_writer(fds.fd) == 0)) {
         printf("DMA not available, exiting.\n");
-        errors += 1;
-        goto exit;
+        exit(1);
     }
 
     /* enable dma loopback*/
     litepcie_dma(fds.fd, 1);
+
+    if (litepcie_device_zero_copy) {
+        /* if mmap: get it from the kernel */
+        if (explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info) != 0) {
+            fprintf(stderr, "LITEPCIE_IOCTL_MMAP_DMA_INFO error, exiting.\n");
+            exit(1);
+        }
+
+        buf_rd = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_READ,
+            MAP_SHARED, fds.fd, mmap_dma_info.dma_rx_buf_offset);
+        if (buf_rd == MAP_FAILED) {
+            fprintf(stderr, "MMAP failed, exiting.\n");
+            exit(1);
+        }
+
+        buf_wr = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_WRITE,
+                MAP_SHARED, fds.fd, mmap_dma_info.dma_tx_buf_offset);
+        if (buf_wr == MAP_FAILED) {
+            fprintf(stderr, "MMAP failed, exiting.\n");
+            exit(1);
+        }
+    } else {
+        /* else: allocate it */
+        buf_rd = malloc(DMA_BUFFER_TOTAL_SIZE);
+        buf_wr = malloc(DMA_BUFFER_TOTAL_SIZE);
+
+        memset(buf_rd, 0, DMA_BUFFER_TOTAL_SIZE);
+        memset(buf_wr, 0, DMA_BUFFER_TOTAL_SIZE);
+    }
+
+    errors = 0;
+    seed_wr = 0;
+    seed_rd = 0;
+
+#ifdef DMA_CHECK_DATA
+    write_pn_data((uint32_t *) buf_wr, DMA_BUFFER_TOTAL_SIZE/4, &seed_wr);
+#endif
 
     /* test loop */
     i = 0;
@@ -393,20 +421,73 @@ static void dma_test(void)
 
         /* read event */
         if (fds.revents & POLLIN) {
-            len = read(fds.fd, buf_rd, DMA_BUFFER_TOTAL_SIZE);
-            if(len >= 0) {
-                uint32_t check_errors;
+            if (litepcie_device_zero_copy) {
+                int64_t buf_count;
+                int64_t buf_offset;
+
+                /* count available buffers and write them to file */
+                buf_count = writer_hw_count - writer_sw_count;
+                buf_offset = (writer_sw_count%DMA_BUFFER_COUNT)*DMA_BUFFER_SIZE;
+                for (j=0; j<buf_count; j++) {
+                    uint32_t check_errors;
 #ifdef DMA_CHECK_DATA
-                check_errors = check_pn_data((uint32_t *) buf_rd, len/4, &seed_rd);
-                if (writer_hw_count > DMA_BUFFER_COUNT)
-                    errors += check_errors;
+                    check_errors = check_pn_data((uint32_t *) buf_rd + buf_offset/4, DMA_BUFFER_SIZE/4, &seed_rd);
+                    if (writer_hw_count > DMA_BUFFER_COUNT)
+                        errors += check_errors;
 #endif
+                    buf_offset = add_mod_int(buf_offset, DMA_BUFFER_SIZE, DMA_BUFFER_TOTAL_SIZE);
+                }
+
+                /* update dma sw_count*/
+                mmap_dma_update.sw_count = writer_sw_count + buf_count;
+                explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE, &mmap_dma_update);
+
+            } else {
+                len = read(fds.fd, buf_rd, DMA_BUFFER_TOTAL_SIZE);
+                if(len >= 0) {
+                    uint32_t check_errors;
+#ifdef DMA_CHECK_DATA
+                    check_errors = check_pn_data((uint32_t *) buf_rd, len/4, &seed_rd);
+                    if (writer_hw_count > DMA_BUFFER_COUNT)
+                        errors += check_errors;
+#endif
+                }
             }
         }
 
         /* write event */
         if (fds.revents & POLLOUT) {
-            len = write(fds.fd, buf_wr, DMA_BUFFER_TOTAL_SIZE);
+            if (litepcie_device_zero_copy) {
+                int64_t buf_count;
+                int64_t buf_offset;
+
+                /* count available buffers and read them from file */
+                buf_count = DMA_BUFFER_COUNT/2 - (reader_sw_count - reader_hw_count);
+                buf_offset = (reader_sw_count%DMA_BUFFER_COUNT)*DMA_BUFFER_SIZE;
+
+                if (reader_sw_count - reader_hw_count < 0) {
+                    fprintf(stderr, "Writing too late, %ld buffers lost\n",
+                            reader_hw_count - reader_sw_count);
+                    // NOTE: this won't cause errors, because the data we write
+                    //       wraps around at the total buffer boundary (so we're
+                    //       effectively always writing the same data), and we
+                    //       initialized the entire reader buffer ahead of time.
+                } else {
+                    for (j=0; j<buf_count; j++) {
+#ifdef DMA_CHECK_DATA
+                        write_pn_data((uint32_t *) buf_wr + buf_offset/4, DMA_BUFFER_SIZE/4, &seed_wr);
+#endif
+                        buf_offset = add_mod_int(buf_offset, DMA_BUFFER_SIZE, DMA_BUFFER_TOTAL_SIZE);
+                    }
+                }
+
+                /* update dma sw_count*/
+                mmap_dma_update.sw_count = reader_sw_count + buf_count;
+                explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update);
+
+            } else {
+                len = write(fds.fd, buf_wr, DMA_BUFFER_TOTAL_SIZE);
+            }
         }
 
         /* statistics */
@@ -433,9 +514,14 @@ static void dma_test(void)
     litepcie_release_dma_reader(fds.fd);
     litepcie_release_dma_writer(fds.fd);
 
-exit:
-    free(buf_rd);
-    free(buf_wr);
+    if (litepcie_device_zero_copy) {
+        munmap(buf_rd, mmap_dma_info.dma_rx_buf_size * mmap_dma_info.dma_rx_buf_count);
+        munmap(buf_wr, mmap_dma_info.dma_tx_buf_size * mmap_dma_info.dma_tx_buf_count);
+
+    } else {
+        free(buf_rd);
+        free(buf_wr);
+    }
 
     close(fds.fd);
 }
@@ -494,6 +580,7 @@ static void help(void)
            "-h                                Help\n"
            "-c device_num                     Select the FPGA device (default = 0)\n"
            "-g device_num                     Select the GPU device (default = -1, disabled)\n"
+           "-z                                Enable zero-copy DMA mode\n"
            "\n"
            "available commands:\n"
            "info                              Board information\n"
@@ -518,11 +605,12 @@ int main(int argc, char **argv)
     int c;
 
     litepcie_device_num = 0;
+    litepcie_device_zero_copy = 0;
     cuda_device_num = -1;
 
     /* parameters */
     for(;;) {
-        c = getopt(argc, argv, "hfc:g:");
+        c = getopt(argc, argv, "hfc:g:z");
         if (c == -1)
             break;
         switch(c) {
@@ -534,6 +622,9 @@ int main(int argc, char **argv)
             break;
         case 'g':
             cuda_device_num = atoi(optarg);
+            break;
+        case 'z':
+            litepcie_device_zero_copy = 1;
             break;
         default:
             exit(1);
