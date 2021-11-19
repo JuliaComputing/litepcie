@@ -26,6 +26,7 @@
 #include <signal.h>
 #include <math.h>
 #include <cuda.h>
+#include <errno.h>
 #include <libexplain/ioctl.h>
 
 #include "litepcie.h"
@@ -416,7 +417,11 @@ static void dma_test(void)
 
         /* polling */
         ret = poll(&fds, 1, 100);
-        if (ret <=  0) {
+        if (ret < 0) {
+            if (errno != EINTR)
+                perror("poll()");
+            break;
+        } else if (ret == 0) {
             continue;
         }
 
@@ -445,6 +450,10 @@ static void dma_test(void)
 
             } else {
                 len = read(fds.fd, buf_rd, DMA_BUFFER_TOTAL_SIZE);
+                if (len < 0) {
+                    perror("read()");
+                    break;
+                }
                 if(len >= 0) {
                     uint32_t check_errors;
 #ifdef DMA_CHECK_DATA
@@ -488,6 +497,10 @@ static void dma_test(void)
 
             } else {
                 len = write(fds.fd, buf_wr, DMA_BUFFER_TOTAL_SIZE);
+                if (len < 0) {
+                    perror("write()");
+                    break;
+                }
             }
         }
 
