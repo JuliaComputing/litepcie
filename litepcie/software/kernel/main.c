@@ -54,13 +54,14 @@ struct litepcie_dma_chan {
 	uint32_t writer_interrupt;
 	uint32_t reader_interrupt;
 
-	// the physical (?) addresses that can be passed to the hardware
+	// addresses that can be passed to the hardware
 	dma_addr_t reader_handle[DMA_BUFFER_COUNT];
 	dma_addr_t writer_handle[DMA_BUFFER_COUNT];
 
-	// the virtual CPU addresses pointing to the allocated DMA memory.
-	// if backed by the GPU, these addresses are not available
-	// (use zero-copy mode; mmap'ing the GPU's physical addresses _is_ supported)
+	// addresses pointing to the allocated DMA memory.
+	// - for CPU memory, these are virtual addresses
+	// - for GPU memory, these are physical addresses
+	//   (as the kernel does not understandn virtual GPU addresses)
 	uint32_t *reader_addr[DMA_BUFFER_COUNT];
 	uint32_t *writer_addr[DMA_BUFFER_COUNT];
 
@@ -103,6 +104,7 @@ struct litepcie_device {
 	enum DMASource dma_source;
 	uint64_t gpu_virt_start;	// start page address of the virtual memory
 	nvidia_p2p_page_table_t *gpu_page_table;
+	nvidia_p2p_dma_mapping_t *gpu_dma_mapping;
 };
 
 struct litepcie_chan_priv {
@@ -282,6 +284,15 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 	}
 	BUG_ON(!s->gpu_page_table);
 
+	// make the virtual memory accessible to other devices
+	error = nvidia_p2p_dma_map_pages(s->dev, s->gpu_page_table, &s->gpu_dma_mapping);
+	if (error != 0) {
+		dev_err(&s->dev->dev, "Error in nvidia_p2p_dma_map_pages()\n");
+		error = -EINVAL;
+		goto do_unlock_pages;
+	}
+	BUG_ON(s->gpu_page_table->entries != s->gpu_dma_mapping->entries);
+
 	/* for each dma channel */
 	page = 0;
 	offset = 0;
@@ -296,13 +307,12 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 			}
 			if (page >= s->gpu_page_table->entries) {
 				error = -ENOMEM;
-				goto do_unlock_pages;
+				goto do_unmap_pages;
 			}
 			nvp = s->gpu_page_table->pages[page];
 			BUG_ON(!nvp);
-			dmachan->reader_handle[j] = nvp->physical_address + offset;
-			/// XXX: physical address vs. dma_attr_t?
-			//       should we use nvidia_p2p_dma_map_pages?
+			dmachan->reader_addr[j] = (uint32_t*)(nvp->physical_address + offset);
+			dmachan->reader_handle[j] = s->gpu_dma_mapping->dma_addresses[page] + offset;
 			offset += DMA_BUFFER_SIZE;
 
 			/* allocate wr */
@@ -312,11 +322,12 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 			}
 			if (page >= s->gpu_page_table->entries) {
 				error = -ENOMEM;
-				goto do_unlock_pages;
+				goto do_unmap_pages;
 			}
 			nvp = s->gpu_page_table->pages[page];
 			BUG_ON(!nvp);
-			dmachan->writer_handle[j] = nvp->physical_address + offset;
+			dmachan->writer_addr[j] = (uint32_t*)(nvp->physical_address + offset);
+			dmachan->writer_handle[j] = s->gpu_dma_mapping->dma_addresses[page] + offset;
 			offset += DMA_BUFFER_SIZE;
 		}
 	}
@@ -324,6 +335,8 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 	s->dma_source = GPU;
 	return 0;
 
+do_unmap_pages:
+	nvidia_p2p_dma_unmap_pages(s->dev, s->gpu_page_table, s->gpu_dma_mapping);
 do_unlock_pages:
 	nvidia_p2p_put_pages(0, 0, s->gpu_virt_start, s->gpu_page_table);
 do_exit:
@@ -333,6 +346,12 @@ do_exit:
 static int litepcie_dma_deinit_gpu(struct litepcie_device *s)
 {
 	int error;
+
+	error = nvidia_p2p_dma_unmap_pages(s->dev, s->gpu_page_table, s->gpu_dma_mapping);
+	if (error != 0) {
+		dev_err(&s->dev->dev, "Error in nvidia_p2p_dma_unmap_pages()\n");
+		return -EINVAL;
+	}
 
 	error = nvidia_p2p_put_pages(0, 0, s->gpu_virt_start, s->gpu_page_table);
 	if (error != 0) {
@@ -767,11 +786,11 @@ static int litepcie_mmap(struct file *file, struct vm_area_struct *vma)
 
 	for (i = 0; i < DMA_BUFFER_COUNT; i++) {
 		if (s->dma_source == GPU) {
-			// with GPU-backed memory buffers, the dma_addr_t is the physaddr
+			// with GPU-backed memory buffers, addresses are physical already
 			if (is_tx)
-				pfn = chan->dma.reader_handle[i] >> PAGE_SHIFT;
+				pfn = ((unsigned long)chan->dma.reader_addr[i]) >> PAGE_SHIFT;
 			else
-				pfn = chan->dma.writer_handle[i] >> PAGE_SHIFT;
+				pfn = ((unsigned long)chan->dma.writer_addr[i]) >> PAGE_SHIFT;
 
 		} else {
 			if (is_tx)
