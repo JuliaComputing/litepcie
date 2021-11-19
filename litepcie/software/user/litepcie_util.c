@@ -396,6 +396,25 @@ static void dma_test(void)
 
 #ifdef DMA_CHECK_DATA
     write_pn_data((uint32_t *) buf_wr, DMA_BUFFER_TOTAL_SIZE/4, &seed_wr);
+
+    if (cuda_device_num >= 0) {
+        // check whether GPU memory, initialized by writing to mmapped memory,
+        // can be read back and verified using CUDA API calls.
+        void* cpu_buf = malloc(2*DMA_BUFFER_TOTAL_SIZE);
+        checkError(cuMemcpyDtoH(cpu_buf, gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE));
+        for (i = 0; i < DMA_BUFFER_COUNT; i++) {
+            // access the underlying memory in the way the kernel driver would
+            errors += check_pn_data(
+                (uint32_t *) cpu_buf + i*DMA_BUFFER_SIZE/2,
+                DMA_BUFFER_SIZE/4,
+                &seed_rd
+            );
+        }
+        if (errors) {
+            fprintf(stderr, "GPU memory initialization failed (%d errors), exiting.\n", errors);
+            exit(1);
+        }
+    }
 #endif
 
     /* test loop */
