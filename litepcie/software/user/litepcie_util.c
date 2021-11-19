@@ -49,18 +49,19 @@ void intHandler(int dummy) {
     keep_running = 0;
 }
 
-void checkError(CUresult status) {
+#define checkError(status) { __checkError((status), __FILE__, __LINE__); }
+void __checkError(CUresult status, const char *file, int line) {
     if (status != CUDA_SUCCESS) {
         const char *perrstr = 0;
         CUresult ok = cuGetErrorString(status, &perrstr);
         if (ok == CUDA_SUCCESS) {
             if (perrstr) {
-                fprintf(stderr, "info: %s\n", perrstr);
+                fprintf(stderr, "CUDA error at %s:%d: %s\n", file, line, perrstr);
             } else {
-                fprintf(stderr, "info: unknown error\n");
+                fprintf(stderr, "CUDA error at %s:%d: unknown error\n", file, line);
             }
         }
-        exit(0);
+        exit(1);
     }
 }
 
@@ -331,11 +332,14 @@ static void dma_test(void)
     uint32_t seed_rd;
 
     uint32_t errors;
-
     char *buf_rd, *buf_wr;
 
     struct litepcie_ioctl_mmap_dma_info mmap_dma_info;
     struct litepcie_ioctl_mmap_dma_update mmap_dma_update;
+
+    CUdevice gpu_dev;
+    CUcontext gpu_ctx;
+    CUdeviceptr gpu_buf;
 
     signal(SIGINT, intHandler);
 
@@ -347,9 +351,27 @@ static void dma_test(void)
     }
 
     /* start dma */
-    litepcie_dma_init(fds.fd);
+    printf("DEBUG: Initializing DMA\n");
+    if (cuda_device_num >= 0) {
+        checkError(cuInit(0));
+
+        checkError(cuDeviceGet(&gpu_dev, cuda_device_num));
+
+        checkError(cuCtxCreate(&gpu_ctx, 0, gpu_dev));
+
+        checkError(cuMemAlloc(&gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE));
+
+        unsigned int flag = 1;
+        checkError(cuPointerSetAttribute(&flag, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, gpu_buf));
+
+        printf("DEBUG: litepcie_dma_init_gpu(%p, %d)\n", (void*)gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE);
+        litepcie_dma_init_gpu(fds.fd, (void*)gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE);
+    } else {
+        litepcie_dma_init_cpu(fds.fd);
+    }
 
     /* request dma */
+    printf("DEBUG: Requesting DMA\n");
     if ((litepcie_request_dma_reader(fds.fd) == 0) |
         (litepcie_request_dma_writer(fds.fd) == 0)) {
         printf("DMA not available, exiting.\n");
@@ -357,15 +379,19 @@ static void dma_test(void)
     }
 
     /* enable dma loopback*/
+    printf("DEBUG: Enabling DMA loopback\n");
     litepcie_dma(fds.fd, 1);
 
+    printf("DEBUG: Mapping DMA memory\n");
     if (litepcie_device_zero_copy) {
         /* if mmap: get it from the kernel */
+        printf("DEBUG: LITEPCIE_IOCTL_MMAP_DMA_INFO\n");
         if (explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info) != 0) {
             fprintf(stderr, "LITEPCIE_IOCTL_MMAP_DMA_INFO error, exiting.\n");
             exit(1);
         }
 
+        printf("DEBUG: mmap reader\n");
         buf_rd = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_READ,
             MAP_SHARED, fds.fd, mmap_dma_info.dma_rx_buf_offset);
         if (buf_rd == MAP_FAILED) {
@@ -373,6 +399,7 @@ static void dma_test(void)
             exit(1);
         }
 
+        printf("DEBUG: mmap writer\n");
         buf_wr = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_WRITE,
                 MAP_SHARED, fds.fd, mmap_dma_info.dma_tx_buf_offset);
         if (buf_wr == MAP_FAILED) {
@@ -393,10 +420,12 @@ static void dma_test(void)
     seed_rd = 0;
 
 #ifdef DMA_CHECK_DATA
+    printf("DEBUG: Initializing write buffer\n");
     write_pn_data((uint32_t *) buf_wr, DMA_BUFFER_TOTAL_SIZE/4, &seed_wr);
 #endif
 
     /* test loop */
+    printf("DEBUG: Starting test loop\n");
     i = 0;
     reader_hw_count = 0;
     reader_sw_count = 0;
@@ -410,16 +439,19 @@ static void dma_test(void)
             break;
 
         /* set / get dma */
+        printf("DEBUG: Set / get DMA\n");
         litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
         litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
 
         /* polling */
+        printf("DEBUG: Poll\n");
         ret = poll(&fds, 1, 100);
         if (ret <=  0) {
             continue;
         }
 
         /* read event */
+        printf("DEBUG: Read?\n");
         if (fds.revents & POLLIN) {
             if (litepcie_device_zero_copy) {
                 int64_t buf_count;

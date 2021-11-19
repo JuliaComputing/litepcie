@@ -280,6 +280,7 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 		error = -EINVAL;
 		goto do_exit;
 	}
+	BUG_ON(!s->gpu_page_table);
 
 	/* for each dma channel */
 	page = 0;
@@ -293,11 +294,12 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 				page += 1;
 				offset = 0;
 			}
-			if (page > s->gpu_page_table->entries) {
+			if (page >= s->gpu_page_table->entries) {
 				error = -ENOMEM;
 				goto do_unlock_pages;
 			}
 			nvp = s->gpu_page_table->pages[page];
+			BUG_ON(!nvp);
 			dmachan->reader_handle[j] = nvp->physical_address + offset;
 			/// XXX: physical address vs. dma_attr_t?
 			//       should we use nvidia_p2p_dma_map_pages?
@@ -308,11 +310,12 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 				page += 1;
 				offset = 0;
 			}
-			if (page > s->gpu_page_table->entries) {
+			if (page >= s->gpu_page_table->entries) {
 				error = -ENOMEM;
 				goto do_unlock_pages;
 			}
 			nvp = s->gpu_page_table->pages[page];
+			BUG_ON(!nvp);
 			dmachan->writer_handle[j] = nvp->physical_address + offset;
 			offset += DMA_BUFFER_SIZE;
 		}
@@ -766,9 +769,9 @@ static int litepcie_mmap(struct file *file, struct vm_area_struct *vma)
 		if (s->dma_source == GPU) {
 			// with GPU-backed memory buffers, the dma_addr_t is the physaddr
 			if (is_tx)
-				pfn = chan->dma.reader_handle[i];
+				pfn = chan->dma.reader_handle[i] >> PAGE_SHIFT;
 			else
-				pfn = chan->dma.writer_handle[i];
+				pfn = chan->dma.writer_handle[i] >> PAGE_SHIFT;
 
 		} else {
 			if (is_tx)
@@ -776,6 +779,7 @@ static int litepcie_mmap(struct file *file, struct vm_area_struct *vma)
 			else
 				pfn = __pa(chan->dma.writer_addr[i]) >> PAGE_SHIFT;
 		}
+		// XXX: why is >> PAGE_SHIFT required?
 
 		/*
 		 * Note: the memory is cached, so the user must explicitly
