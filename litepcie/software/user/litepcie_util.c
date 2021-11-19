@@ -49,18 +49,19 @@ void intHandler(int dummy) {
     keep_running = 0;
 }
 
-void checkError(CUresult status) {
+#define checkError(status) { __checkError((status), __FILE__, __LINE__); }
+void __checkError(CUresult status, const char *file, int line) {
     if (status != CUDA_SUCCESS) {
         const char *perrstr = 0;
         CUresult ok = cuGetErrorString(status, &perrstr);
         if (ok == CUDA_SUCCESS) {
             if (perrstr) {
-                fprintf(stderr, "info: %s\n", perrstr);
+                fprintf(stderr, "CUDA error at %s:%d: %s\n", file, line, perrstr);
             } else {
-                fprintf(stderr, "info: unknown error\n");
+                fprintf(stderr, "CUDA error at %s:%d: unknown error\n", file, line);
             }
         }
-        exit(0);
+        exit(1);
     }
 }
 
