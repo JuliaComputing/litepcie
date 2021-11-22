@@ -282,12 +282,26 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 		error = -EINVAL;
 		goto do_exit;
 	}
-	BUG_ON(!s->gpu_page_table);
 
-	// make the virtual memory accessible to other devices
+	BUG_ON(!s->gpu_page_table);
+	if (! NVIDIA_P2P_PAGE_TABLE_VERSION_COMPATIBLE(s->gpu_page_table)) {
+		dev_err(&s->dev->dev, "Incompatible page table version 0x%08x\n",
+		        s->gpu_page_table->version);
+		error = -EINVAL;
+		goto do_exit;
+	}
+
+	// make the physical memory accessible to other devices
 	error = nvidia_p2p_dma_map_pages(s->dev, s->gpu_page_table, &s->gpu_dma_mapping);
 	if (error != 0) {
 		dev_err(&s->dev->dev, "Error in nvidia_p2p_dma_map_pages()\n");
+		error = -EINVAL;
+		goto do_unlock_pages;
+	}
+
+	if (!NVIDIA_P2P_DMA_MAPPING_VERSION_COMPATIBLE(s->gpu_dma_mapping)) {
+		dev_err(&s->dev->dev, "Incompatible DMA mapping version 0x%08x\n",
+		        s->gpu_dma_mapping->version);
 		error = -EINVAL;
 		goto do_unlock_pages;
 	}
