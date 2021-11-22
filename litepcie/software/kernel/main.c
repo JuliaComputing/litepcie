@@ -326,7 +326,7 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 			nvp = s->gpu_page_table->pages[page];
 			BUG_ON(!nvp);
 			dmachan->reader_addr[j] = (uint32_t*)(nvp->physical_address + offset);
-			dmachan->reader_handle[j] = s->gpu_dma_mapping->dma_addresses[page] + offset;
+			dmachan->reader_handle[j] = ((dma_addr_t)s->gpu_dma_mapping->dma_addresses[page]) + offset;
 			offset += DMA_BUFFER_SIZE;
 
 			/* allocate wr */
@@ -341,7 +341,7 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 			nvp = s->gpu_page_table->pages[page];
 			BUG_ON(!nvp);
 			dmachan->writer_addr[j] = (uint32_t*)(nvp->physical_address + offset);
-			dmachan->writer_handle[j] = s->gpu_dma_mapping->dma_addresses[page] + offset;
+			dmachan->writer_handle[j] = ((dma_addr_t)s->gpu_dma_mapping->dma_addresses[page]) + offset;
 			offset += DMA_BUFFER_SIZE;
 		}
 	}
