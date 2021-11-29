@@ -440,7 +440,7 @@ static void debug(void)
             printf("DEBUG: Ready to read\n");
             break;
         } else {
-            printf("DEBUG: Poll: %d\n", fds.revents);
+            printf("DEBUG: Poll events: %d , revents: %d \n", fds.events, fds.revents);
         }
     }
 
@@ -485,9 +485,9 @@ static void debug2(void)
         exit(1);
     }
 
-    CUdevice gpu_dev;
-    CUcontext gpu_ctx;
-    CUdeviceptr gpu_buf;
+    //CUdevice gpu_dev;
+    //CUcontext gpu_ctx;
+    //CUdeviceptr gpu_buf;
 
     /* start dma */
     //if (cuda_device_num >= 0) {
@@ -550,7 +550,7 @@ static void debug2(void)
             printf("DEBUG: Exception condition\n");
             break;
         } else {
-            printf("DEBUG: Poll: %d\n", fds.revents);
+            printf("DEBUG: Poll events: %d , revents: %d \n", fds.events, fds.revents);
         }
     }
 
@@ -586,11 +586,11 @@ static void debug2(void)
             exit(1);
         } else if (ret == 0) {
             printf("DEBUG: Poll timed out\n");
-        } else if (fds.revents & POLLIN) {
+        } else if (fds.events & POLLIN) {
             printf("DEBUG: Ready to read\n");
             break;
         } else {
-            printf("DEBUG: Poll: %d\n", fds.revents);
+            printf("DEBUG: Poll events: %d , revents: %d \n", fds.events, fds.revents);
         }
     }
 

@@ -68,7 +68,7 @@ void litepcie_dma_init_cpu(int fd) {
 void litepcie_dma_init_gpu(int fd, void* addr, size_t size) {
     struct litepcie_ioctl_dma_init m;
     m.use_gpu = 1;
-    m.gpu_addr = addr;
+    m.gpu_addr = (uint64_t)addr;
     m.gpu_size = size;
     explain_ioctl_or_die(fd, LITEPCIE_IOCTL_DMA_INIT, &m);
 }
