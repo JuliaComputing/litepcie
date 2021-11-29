@@ -1,4 +1,4 @@
-CFLAGS=-O2 -Wall -g -I../kernel -MMD
+CFLAGS=-O2 -Wall -Werror -g -I../kernel -MMD
 LDFLAGS=-g
 CC=$(CROSS_COMPILE)gcc
 AR=ar
