@@ -329,6 +329,8 @@ static void debug(void)
     struct litepcie_ioctl_mmap_dma_info mmap_dma_info;
     struct litepcie_ioctl_mmap_dma_update mmap_dma_update;
 
+    signal(SIGINT, intHandler);
+
     fds.fd = open(litepcie_device, O_RDWR | O_CLOEXEC);
     fds.events = POLLIN | POLLOUT;
     if (fds.fd < 0) {
@@ -399,154 +401,10 @@ static void debug(void)
         } else if (fds.revents & POLLOUT) {
             printf("DEBUG: Ready to write\n");
             break;
-        } else {
-            printf("DEBUG: Poll: %d\n", fds.revents);
-        }
-    }
-
-    /* set / get initial dma counters */
-    reader_hw_count=0;
-    reader_sw_count=0;
-    writer_hw_count=0;
-    writer_sw_count=0;
-    litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-    litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-    printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-    printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
-
-    /* write a single buffer */
-    for (int i = 0; i < DMA_BUFFER_SIZE/sizeof(int); i++)
-        ((int*)buf_wr)[i] = i;
-    mmap_dma_update.sw_count = 1;
-    explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update);
-
-    /* set / get dma counters */
-    litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-    litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-    printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-    printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
-
-    /* wait for the DMA */
-    while (true) {
-        printf("DEBUG: Poll?\n");
-        ret = poll(&fds, 1, 100);
-        if (ret < 0) {
-            if (errno != EINTR)
-                perror("poll()");
-            exit(1);
-        } else if (ret == 0) {
-            printf("DEBUG: Poll timed out\n");
-        } else if (fds.events & POLLIN) {
+        } else if (fds.revents & POLLIN) {
             printf("DEBUG: Ready to read\n");
             break;
-        } else {
-            printf("DEBUG: Poll events: %d , revents: %d \n", fds.events, fds.revents);
-        }
-    }
-
-    /* set / get dma counters */
-    litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-    litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-    printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-    printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
-
-    // TODO: read a single buffer
-
-    //litepcie_dma_reader(fds.fd, 0, &reader_hw_count, &reader_sw_count);
-    //litepcie_dma_writer(fds.fd, 0, &writer_hw_count, &writer_sw_count);
-
-    litepcie_release_dma_reader(fds.fd);
-    litepcie_release_dma_writer(fds.fd);
-
-    munmap(buf_rd, mmap_dma_info.dma_rx_buf_size * mmap_dma_info.dma_rx_buf_count);
-    munmap(buf_wr, mmap_dma_info.dma_tx_buf_size * mmap_dma_info.dma_tx_buf_count);
-
-    close(fds.fd);
-}
-
-
-static void debug2(void)
-{
-    struct pollfd fds;
-    int ret;
-
-    char *buf_rd, *buf_wr;
-
-    int64_t reader_hw_count, reader_sw_count;
-    int64_t writer_hw_count, writer_sw_count;
-
-    struct litepcie_ioctl_mmap_dma_info mmap_dma_info;
-    struct litepcie_ioctl_mmap_dma_update mmap_dma_update;
-
-    fds.fd = open(litepcie_device, O_RDWR | O_CLOEXEC);
-    fds.events = POLLIN | POLLOUT;
-    if (fds.fd < 0) {
-        fprintf(stderr, "Could not init driver\n");
-        exit(1);
-    }
-
-    //CUdevice gpu_dev;
-    //CUcontext gpu_ctx;
-    //CUdeviceptr gpu_buf;
-
-    /* start dma */
-    //if (cuda_device_num >= 0) {
-    //    checkError(cuInit(0));
-    //    checkError(cuDeviceGet(&gpu_dev, cuda_device_num));
-    //    checkError(cuCtxCreate(&gpu_ctx, 0, gpu_dev));
-    //    checkError(cuMemAlloc(&gpu_buf, DMA_BUFFER_SIZE));
-    //    unsigned int flag = 1;
-    //    checkError(cuPointerSetAttribute(&flag, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, gpu_buf));
-    //    litepcie_dma_init_gpu(fds.fd, (void*)gpu_buf, DMA_BUFFER_SIZE);
-    //} else {
-        litepcie_dma_init_cpu(fds.fd);
-    //}
-
-    /* request dma */
-    if ((litepcie_request_dma_reader(fds.fd) == 0) |
-        (litepcie_request_dma_writer(fds.fd) == 0)) {
-        printf("DMA not available, exiting.\n");
-        exit(1);
-    }
-
-    /* enable dma loopback*/
-    litepcie_dma(fds.fd, 1);
-
-    /* mmap dma buffer */
-    if (explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info) != 0) {
-        fprintf(stderr, "LITEPCIE_IOCTL_MMAP_DMA_INFO error, exiting.\n");
-        exit(1);
-    }
-    buf_rd = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_READ,
-        MAP_SHARED, fds.fd, mmap_dma_info.dma_rx_buf_offset);
-    if (buf_rd == MAP_FAILED) {
-        fprintf(stderr, "MMAP failed, exiting.\n");
-        exit(1);
-    }
-    buf_wr = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_WRITE,
-            MAP_SHARED, fds.fd, mmap_dma_info.dma_tx_buf_offset);
-    if (buf_wr == MAP_FAILED) {
-        fprintf(stderr, "MMAP failed, exiting.\n");
-        exit(1);
-    }
-
-    /* wait for the DMA */
-    while (true) {
-        printf("DEBUG: Poll?\n");
-        ret = poll(&fds, 1, 100);
-        if (ret < 0) {
-            if (errno != EINTR)
-                perror("poll()");
-            exit(1);
-        } else if (ret == 0) {
-            printf("DEBUG: Poll timed out\n");
-        } else if (fds.events & POLLOUT) {
-            printf("DEBUG: Ready to write\n");
-            break;
-        } else if (fds.events & POLLIN) {
-            printf("DEBUG: Ready to read\n");
-            break;
-        } else if (fds.events & POLLPRI) {
+        } else if (fds.revents & POLLPRI) {
             printf("DEBUG: Exception condition\n");
             break;
         } else {
@@ -979,6 +837,7 @@ int main(int argc, char **argv)
             break;
         case 'g':
             cuda_device_num = atoi(optarg);
+            printf("Using GPU device %d\n", cuda_device_num);
             break;
         case 'z':
             litepcie_device_zero_copy = 1;
@@ -1004,8 +863,6 @@ int main(int argc, char **argv)
         scratch_test();
     else if (!strcmp(cmd, "debug"))
         debug();
-    else if (!strcmp(cmd, "debug2"))
-        debug2();
 #ifdef CSR_UART_XOVER_RXTX_ADDR
     else if (!strcmp(cmd, "uart_test"))
         uart_test();
