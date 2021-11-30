@@ -8,10 +8,10 @@ PROGS=litepcie_util litepcie_test
 all: $(PROGS)
 
 litepcie_util: liblitepcie.o litepcie_util.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lrt -lm -lexplain
+	$(CC) $(LDFLAGS) -o $@ $^ -lrt -lm -lexplain -lcuda
 
 litepcie_test: liblitepcie.o litepcie_test.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lrt -lm -lexplain
+	$(CC) $(LDFLAGS) -o $@ $^ -lrt -lm -lexplain -lcuda
 
 clean:
 	rm -f $(PROGS) *.o *.a *.d *~

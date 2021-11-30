@@ -24,6 +24,10 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <math.h>
+#include <cuda.h>
+#include <errno.h>
+#include <libexplain/ioctl.h>
 
 #include "litepcie.h"
 #include "config.h"
@@ -37,11 +41,29 @@
 
 static char litepcie_device[1024];
 static int litepcie_device_num;
+static int cuda_device_num;
+static uint8_t litepcie_device_zero_copy;
 
 sig_atomic_t keep_running = 1;
 
 void intHandler(int dummy) {
     keep_running = 0;
+}
+
+#define checkError(status) { __checkError((status), __FILE__, __LINE__); }
+void __checkError(CUresult status, const char *file, int line) {
+    if (status != CUDA_SUCCESS) {
+        const char *perrstr = 0;
+        CUresult ok = cuGetErrorString(status, &perrstr);
+        if (ok == CUDA_SUCCESS) {
+            if (perrstr) {
+                fprintf(stderr, "CUDA error at %s:%d: %s\n", file, line, perrstr);
+            } else {
+                fprintf(stderr, "CUDA error at %s:%d: unknown error\n", file, line);
+            }
+        }
+        exit(1);
+    }
 }
 
 /* info */
@@ -77,6 +99,32 @@ static void info(void)
     printf("FPGA vccbram: %0.2f V\n",
            (double)litepcie_readl(fd, CSR_XADC_VCCBRAM_ADDR) / 4096 * 3);
 #endif
+
+    if (cuda_device_num >= 0) {
+        checkError(cuInit(0));
+
+        CUdevice device;
+        checkError(cuDeviceGet(&device, cuda_device_num));
+
+        char name[256];
+        checkError(cuDeviceGetName(name, 256, device));
+        fprintf(stderr, "GPU identification: %s\n", name);
+
+        // get compute capabilities and the devicename
+        int major = 0, minor = 0;
+        checkError(
+            cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device));
+        checkError(
+            cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device));
+        fprintf(stderr, "GPU compute capability: %d.%d\n", major, minor);
+
+        size_t global_mem = 0;
+        checkError(cuDeviceTotalMem(&global_mem, device));
+        fprintf(stderr, "GPU global memory: %llu MB\n", (unsigned long long)(global_mem >> 20));
+        if (global_mem > (unsigned long long)4 * 1024 * 1024 * 1024L)
+            fprintf(stderr, "GPU 64-bit memory address support\n");
+    }
+
     close(fd);
 }
 
@@ -459,7 +507,9 @@ static void help(void)
            "\n"
            "options:\n"
            "-h                                Help\n"
-           "-c device_num                     Select the device (default = 0)\n"
+           "-c device_num                     Select the FPGA device (default = 0)\n"
+           "-g device_num                     Select the GPU device (default = -1, disabled)\n"
+           "-z                                Enable zero-copy DMA mode\n"
            "\n"
            "available commands:\n"
            "info                              Board information\n"
@@ -484,10 +534,12 @@ int main(int argc, char **argv)
     int c;
 
     litepcie_device_num = 0;
+    litepcie_device_zero_copy = 0;
+    cuda_device_num = -1;
 
     /* parameters */
     for(;;) {
-        c = getopt(argc, argv, "hfc:");
+        c = getopt(argc, argv, "hfc:g:z");
         if (c == -1)
             break;
         switch(c) {
@@ -496,6 +548,13 @@ int main(int argc, char **argv)
             break;
         case 'c':
             litepcie_device_num = atoi(optarg);
+            break;
+        case 'g':
+            cuda_device_num = atoi(optarg);
+            printf("Using GPU device %d\n", cuda_device_num);
+            break;
+        case 'z':
+            litepcie_device_zero_copy = 1;
             break;
         default:
             exit(1);
