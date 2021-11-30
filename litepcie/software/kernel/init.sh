@@ -1,6 +1,7 @@
 #!/bin/sh
 # TODO: use udev instead
 
+
 FOUND=$(lsmod | grep litepcie)
 if [ "$FOUND" != "" ] ; then
     echo "Module already installed"
