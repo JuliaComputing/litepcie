@@ -388,7 +388,8 @@ static void debug(void)
         exit(1);
     }
 
-    /* wait for the DMA */
+    /* wait there's a DMA buffer ready to write to */
+    fds.events = POLLOUT;
     while (true) {
         printf("DEBUG: Poll?\n");
         ret = poll(&fds, 1, 100);
@@ -400,12 +401,6 @@ static void debug(void)
             printf("DEBUG: Poll timed out\n");
         } else if (fds.revents & POLLOUT) {
             printf("DEBUG: Ready to write\n");
-            break;
-        } else if (fds.revents & POLLIN) {
-            printf("DEBUG: Ready to read\n");
-            break;
-        } else if (fds.revents & POLLPRI) {
-            printf("DEBUG: Exception condition\n");
             break;
         } else {
             printf("DEBUG: Poll events: %d , revents: %d \n", fds.events, fds.revents);
@@ -434,7 +429,8 @@ static void debug(void)
     printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
     printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
 
-    /* wait for the DMA */
+    /* wait there's a DMA buffer ready to read from */
+    fds.events = POLLIN;
     while (true) {
         printf("DEBUG: Poll?\n");
         ret = poll(&fds, 1, 100);
@@ -444,7 +440,7 @@ static void debug(void)
             exit(1);
         } else if (ret == 0) {
             printf("DEBUG: Poll timed out\n");
-        } else if (fds.events & POLLIN) {
+        } else if (fds.revents & POLLIN) {
             printf("DEBUG: Ready to read\n");
             break;
         } else {
