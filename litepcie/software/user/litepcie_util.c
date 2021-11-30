@@ -322,6 +322,275 @@ static int check_pn_data(uint32_t *buf, int count, uint32_t *pseed)
     return errors;
 }
 
+static void gpu_dma_test(void)
+{
+    struct pollfd fds;
+    int ret;
+    int i, j;
+    ssize_t len;
+
+    int64_t reader_hw_count, reader_sw_count, reader_sw_count_last;
+    int64_t writer_hw_count, writer_sw_count;
+
+    int64_t duration;
+    int64_t last_time;
+
+    uint32_t seed_wr;
+    uint32_t seed_rd;
+
+    uint32_t errors;
+
+    char *buf_rd, *buf_wr;
+
+    struct litepcie_ioctl_mmap_dma_info mmap_dma_info;
+    struct litepcie_ioctl_mmap_dma_update mmap_dma_update;
+
+    CUdevice gpu_dev;
+    CUcontext gpu_ctx;
+    CUdeviceptr gpu_buf;
+
+    signal(SIGINT, intHandler);
+
+    fds.fd = open(litepcie_device, O_RDWR | O_CLOEXEC);
+    fds.events = POLLIN | POLLOUT;
+    if (fds.fd < 0) {
+        fprintf(stderr, "Could not init driver\n");
+        exit(1);
+    }
+
+    /* start dma */
+    if (cuda_device_num >= 0) {
+        checkError(cuInit(0));
+
+        checkError(cuDeviceGet(&gpu_dev, cuda_device_num));
+
+        checkError(cuCtxCreate(&gpu_ctx, 0, gpu_dev));
+
+        checkError(cuMemAlloc(&gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE));
+
+        unsigned int flag = 1;
+        checkError(cuPointerSetAttribute(&flag, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, gpu_buf));
+
+        litepcie_dma_init_gpu(fds.fd, (void*)gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE);
+    } else {
+        litepcie_dma_init_cpu(fds.fd);
+    }
+
+    /* request dma */
+    if ((litepcie_request_dma_reader(fds.fd) == 0) |
+        (litepcie_request_dma_writer(fds.fd) == 0)) {
+        printf("DMA not available, exiting.\n");
+        exit(1);
+    }
+
+    /* enable dma loopback*/
+    litepcie_dma(fds.fd, 1);
+
+    if (litepcie_device_zero_copy) {
+        /* if mmap: get it from the kernel */
+        if (explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info) != 0) {
+            fprintf(stderr, "LITEPCIE_IOCTL_MMAP_DMA_INFO error, exiting.\n");
+            exit(1);
+        }
+
+        buf_rd = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_READ,
+            MAP_SHARED, fds.fd, mmap_dma_info.dma_rx_buf_offset);
+        if (buf_rd == MAP_FAILED) {
+            fprintf(stderr, "MMAP failed, exiting.\n");
+            exit(1);
+        }
+
+        buf_wr = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_WRITE,
+                MAP_SHARED, fds.fd, mmap_dma_info.dma_tx_buf_offset);
+        if (buf_wr == MAP_FAILED) {
+            fprintf(stderr, "MMAP failed, exiting.\n");
+            exit(1);
+        }
+    } else {
+        /* else: allocate it */
+        buf_rd = malloc(DMA_BUFFER_TOTAL_SIZE);
+        buf_wr = malloc(DMA_BUFFER_TOTAL_SIZE);
+
+        memset(buf_rd, 0, DMA_BUFFER_TOTAL_SIZE);
+        memset(buf_wr, 0, DMA_BUFFER_TOTAL_SIZE);
+    }
+
+    errors = 0;
+    seed_wr = 0;
+    seed_rd = 0;
+
+#ifdef DMA_CHECK_DATA
+    write_pn_data((uint32_t *) buf_wr, DMA_BUFFER_TOTAL_SIZE/4, &seed_wr);
+
+    if (cuda_device_num >= 0) {
+        // check whether GPU memory, initialized by writing to mmapped memory,
+        // can be read back and verified using CUDA API calls.
+        void* cpu_buf = malloc(2*DMA_BUFFER_TOTAL_SIZE);
+        checkError(cuMemcpyDtoH(cpu_buf, gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE));
+        for (i = 0; i < DMA_BUFFER_COUNT; i++) {
+            // access the underlying memory in the way the kernel driver would
+            errors += check_pn_data(
+                (uint32_t *) cpu_buf + i*DMA_BUFFER_SIZE/2,
+                DMA_BUFFER_SIZE/4,
+                &seed_rd
+            );
+        }
+        if (errors) {
+            fprintf(stderr, "GPU memory initialization failed (%d errors), exiting.\n", errors);
+            exit(1);
+        }
+    }
+#endif
+
+    /* test loop */
+    printf("DEBUG: Starting test loop\n");
+    i = 0;
+    reader_hw_count = 0;
+    reader_sw_count = 0;
+    reader_sw_count_last = 0;
+    writer_hw_count = 0;
+    writer_sw_count = 0;
+    last_time = get_time_ms();
+    for (;;) {
+        /* exit loop on ctrl+c pressed */
+        if (!keep_running)
+            break;
+
+        /* set / get dma */
+        litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
+        litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
+        printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
+        printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
+
+        /* polling */
+        printf("DEBUG: Poll?\n");
+        ret = poll(&fds, 1, 100);
+        if (ret < 0) {
+            if (errno != EINTR)
+                perror("poll()");
+            break;
+        } else if (ret == 0) {
+            printf("DEBUG: Poll timed out\n");
+            continue;
+        }
+        printf("DEBUG: Poll!\n");
+
+        /* read event */
+        printf("DEBUG: Read?\n");
+        if (fds.revents & POLLIN) {
+            if (litepcie_device_zero_copy) {
+                int64_t buf_count;
+                int64_t buf_offset;
+
+                /* count available buffers and write them to file */
+                buf_count = writer_hw_count - writer_sw_count;
+                buf_offset = (writer_sw_count%DMA_BUFFER_COUNT)*DMA_BUFFER_SIZE;
+                for (j=0; j<buf_count; j++) {
+                    uint32_t check_errors;
+#ifdef DMA_CHECK_DATA
+                    check_errors = check_pn_data((uint32_t *) buf_rd + buf_offset/4, DMA_BUFFER_SIZE/4, &seed_rd);
+                    if (writer_hw_count > DMA_BUFFER_COUNT)
+                        errors += check_errors;
+#endif
+                    buf_offset = add_mod_int(buf_offset, DMA_BUFFER_SIZE, DMA_BUFFER_TOTAL_SIZE);
+                }
+
+                /* update dma sw_count*/
+                mmap_dma_update.sw_count = writer_sw_count + buf_count;
+                explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE, &mmap_dma_update);
+
+            } else {
+                len = read(fds.fd, buf_rd, DMA_BUFFER_TOTAL_SIZE);
+                if (len < 0) {
+                    perror("read()");
+                    break;
+                }
+                if(len >= 0) {
+                    uint32_t check_errors;
+#ifdef DMA_CHECK_DATA
+                    check_errors = check_pn_data((uint32_t *) buf_rd, len/4, &seed_rd);
+                    if (writer_hw_count > DMA_BUFFER_COUNT)
+                        errors += check_errors;
+#endif
+                }
+            }
+        }
+
+        /* write event */
+        if (fds.revents & POLLOUT) {
+            if (litepcie_device_zero_copy) {
+                int64_t buf_count;
+                int64_t buf_offset;
+
+                /* count available buffers and read them from file */
+                buf_count = DMA_BUFFER_COUNT/2 - (reader_sw_count - reader_hw_count);
+                buf_offset = (reader_sw_count%DMA_BUFFER_COUNT)*DMA_BUFFER_SIZE;
+
+                if (reader_sw_count - reader_hw_count < 0) {
+                    fprintf(stderr, "Writing too late, %ld buffers lost\n",
+                            reader_hw_count - reader_sw_count);
+                    // NOTE: this won't cause errors, because the data we write
+                    //       wraps around at the total buffer boundary (so we're
+                    //       effectively always writing the same data), and we
+                    //       initialized the entire reader buffer ahead of time.
+                } else {
+                    for (j=0; j<buf_count; j++) {
+#ifdef DMA_CHECK_DATA
+                        write_pn_data((uint32_t *) buf_wr + buf_offset/4, DMA_BUFFER_SIZE/4, &seed_wr);
+#endif
+                        buf_offset = add_mod_int(buf_offset, DMA_BUFFER_SIZE, DMA_BUFFER_TOTAL_SIZE);
+                    }
+                }
+
+                /* update dma sw_count*/
+                mmap_dma_update.sw_count = reader_sw_count + buf_count;
+                explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update);
+
+            } else {
+                len = write(fds.fd, buf_wr, DMA_BUFFER_TOTAL_SIZE);
+                if (len < 0) {
+                    perror("write()");
+                    break;
+                }
+            }
+        }
+
+        /* statistics */
+        duration = get_time_ms() - last_time;
+        if (duration > 200) {
+            if(i%10 == 0)
+                printf("\e[1mDMA_SPEED(Gbps) TX_BUFFERS RX_BUFFERS  DIFF  ERRORS\e[0m\n");
+            i++;
+            printf("%14.2f %10" PRIu64 " %10" PRIu64 " %6" PRIu64 " %7u\n",
+                    (double)(reader_sw_count - reader_sw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6),
+                    reader_sw_count,
+                    writer_sw_count,
+                    reader_sw_count - writer_sw_count,
+                    errors);
+            errors = 0;
+            last_time = get_time_ms();
+            reader_sw_count_last = reader_sw_count;
+        }
+    }
+
+    litepcie_dma_reader(fds.fd, 0, &reader_hw_count, &reader_sw_count);
+    litepcie_dma_writer(fds.fd, 0, &writer_hw_count, &writer_sw_count);
+
+    litepcie_release_dma_reader(fds.fd);
+    litepcie_release_dma_writer(fds.fd);
+
+    if (litepcie_device_zero_copy) {
+        munmap(buf_rd, mmap_dma_info.dma_rx_buf_size * mmap_dma_info.dma_rx_buf_count);
+        munmap(buf_wr, mmap_dma_info.dma_tx_buf_size * mmap_dma_info.dma_tx_buf_count);
+
+    } else {
+        free(buf_rd);
+        free(buf_wr);
+    }
+
+    close(fds.fd);
+}
+
 static void dma_test(void)
 {
     struct pollfd fds;
@@ -573,6 +842,8 @@ int main(int argc, char **argv)
         info();
     else if (!strcmp(cmd, "dma_test"))
         dma_test();
+    else if (!strcmp(cmd, "gpu_dma_test"))
+        gpu_dma_test();
     else if (!strcmp(cmd, "scratch_test"))
         scratch_test();
 #ifdef CSR_UART_XOVER_RXTX_ADDR
