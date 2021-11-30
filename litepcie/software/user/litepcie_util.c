@@ -396,7 +396,7 @@ static void debug(void)
         if (ret < 0) {
             if (errno != EINTR)
                 perror("poll()");
-            exit(1);
+            goto cleanup;
         } else if (ret == 0) {
             printf("DEBUG: Poll timed out\n");
         } else if (fds.revents & POLLOUT) {
@@ -437,7 +437,7 @@ static void debug(void)
         if (ret < 0) {
             if (errno != EINTR)
                 perror("poll()");
-            exit(1);
+            goto cleanup;
         } else if (ret == 0) {
             printf("DEBUG: Poll timed out\n");
         } else if (fds.revents & POLLIN) {
@@ -456,8 +456,10 @@ static void debug(void)
 
     // TODO: read a single buffer
 
-    //litepcie_dma_reader(fds.fd, 0, &reader_hw_count, &reader_sw_count);
-    //litepcie_dma_writer(fds.fd, 0, &writer_hw_count, &writer_sw_count);
+cleanup:
+    /* stop the dma */
+    litepcie_dma_reader(fds.fd, 0, &reader_hw_count, &reader_sw_count);
+    litepcie_dma_writer(fds.fd, 0, &writer_hw_count, &writer_sw_count);
 
     litepcie_release_dma_reader(fds.fd);
     litepcie_release_dma_writer(fds.fd);
