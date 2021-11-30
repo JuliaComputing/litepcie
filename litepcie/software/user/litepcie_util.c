@@ -750,6 +750,29 @@ void scratch_test(void)
         exit(1);
     }
 
+    CUdevice gpu_dev;
+    CUcontext gpu_ctx;
+    CUdeviceptr gpu_buf;
+
+    /* start dma */
+    if (cuda_device_num >= 0) {
+        checkError(cuInit(0));
+
+        checkError(cuDeviceGet(&gpu_dev, cuda_device_num));
+
+        checkError(cuCtxCreate(&gpu_ctx, 0, gpu_dev));
+
+        checkError(cuMemAlloc(&gpu_buf, 1));
+
+        unsigned int flag = 1;
+        checkError(cuPointerSetAttribute(&flag, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, gpu_buf));
+
+        printf("GPU scratch test, dma gpu init\n");
+        litepcie_dma_init_gpu(fd, (void*)gpu_buf, 1);
+    } else {
+        litepcie_dma_init_cpu(fd);
+    }
+
     printf("Write 0x12345678 to scratch register:\n");
     litepcie_writel(fd, CSR_CTRL_SCRATCH_ADDR, 0x12345678);
     printf("Read: 0x%08x\n", litepcie_readl(fd, CSR_CTRL_SCRATCH_ADDR));
