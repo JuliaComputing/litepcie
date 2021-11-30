@@ -373,7 +373,8 @@ static void gpu_dma_test(void)
 
         litepcie_dma_init_gpu(fds.fd, (void*)gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE);
     } else {
-        litepcie_dma_init_cpu(fds.fd);
+        printf("CUDA device not specified, exiting.\n");
+        exit(1);
     }
 
     /* request dma */
