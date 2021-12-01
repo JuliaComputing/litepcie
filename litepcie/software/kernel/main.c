@@ -38,8 +38,8 @@
 #include "flags.h"
 #include "nv-p2p.h"
 
-//#define DEBUG_CSR
-//#define DEBUG_MSI
+#define DEBUG_CSR
+#define DEBUG_MSI
 //#define DEBUG_POLL
 //#define DEBUG_READ
 //#define DEBUG_WRITE
@@ -124,7 +124,7 @@ static inline uint32_t litepcie_readl(struct litepcie_device *s, uint32_t addr)
 
 	val = readl(s->bar0_addr + addr - CSR_BASE);
 #ifdef DEBUG_CSR
-	dev_dbg(&s->dev->dev, "csr_read: 0x%08x @ 0x%08x", val, addr);
+	dev_info(&s->dev->dev, "csr_read: 0x%08x @ 0x%08x", val, addr);
 #endif
 	return val;
 }
@@ -132,7 +132,7 @@ static inline uint32_t litepcie_readl(struct litepcie_device *s, uint32_t addr)
 static inline void litepcie_writel(struct litepcie_device *s, uint32_t addr, uint32_t val)
 {
 #ifdef DEBUG_CSR
-	dev_dbg(&s->dev->dev, "csr_write: 0x%08x @ 0x%08x", val, addr);
+	dev_info(&s->dev->dev, "csr_write: 0x%08x @ 0x%08x", val, addr);
 #endif
 	return writel(val, s->bar0_addr + addr - CSR_BASE);
 }
@@ -140,6 +140,8 @@ static inline void litepcie_writel(struct litepcie_device *s, uint32_t addr, uin
 static void litepcie_enable_interrupt(struct litepcie_device *s, int irq_num)
 {
 	uint32_t v;
+
+	dev_info(&s->dev->dev, "litepcie_enable_interrupt: %d", irq_num);
 
 	v = litepcie_readl(s, CSR_PCIE_MSI_ENABLE_ADDR);
 	v |= (1 << irq_num);
@@ -176,12 +178,14 @@ static int litepcie_dma_init_cpu(struct litepcie_device *s)
 				DMA_BUFFER_SIZE,
 				&dmachan->reader_handle[j],
 				GFP_KERNEL);
+			dev_info(&s->dev->dev, "litepcie_dma_init_cpu: reader %d at virt 0x%px, phys 0x%px, DMA 0x%px\n", j, (void*)dmachan->reader_addr[j], (void*)__pa(dmachan->reader_addr[j]), (void*)dmachan->reader_handle[j]);
 			/* allocate wr */
 			dmachan->writer_addr[j] = dma_alloc_coherent(
 				&s->dev->dev,
 				DMA_BUFFER_SIZE,
 				&dmachan->writer_handle[j],
 				GFP_KERNEL);
+			dev_info(&s->dev->dev, "litepcie_dma_init_cpu: writer %d at virt 0x%px, phys 0x%px, DMA 0x%px\n", j, (void*)dmachan->writer_addr[j], (void*)__pa(dmachan->writer_addr[j]), (void*)dmachan->writer_handle[j]);
 			/* check */
 			if (!dmachan->writer_addr[j]
 				|| !dmachan->reader_addr[j]) {
@@ -259,6 +263,8 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 	int page, offset;
 	struct nvidia_p2p_page * nvp;
 
+	dev_info(&s->dev->dev, "litepcie_dma_init_gpu: init GPU DMA with %lld bytes at 0x%px\n", size, (void*)addr);
+
 	if (!s)
 		return -ENODEV;
 	if (s->dma_source != None)
@@ -274,6 +280,7 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 	}
 
 	// make the virtual memory accessible to other devices
+	dev_info(&s->dev->dev, "litepcie_dma_init_gpu: pinning %ld bytes at 0x%px\n", pin_size, (void*)s->gpu_virt_start);
 	error = nvidia_p2p_get_pages(
 		0, 0, s->gpu_virt_start, pin_size, &s->gpu_page_table,
 		litepcie_dma_free_gpu, s);
@@ -306,6 +313,10 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 		goto do_unlock_pages;
 	}
 	BUG_ON(s->gpu_page_table->entries != s->gpu_dma_mapping->entries);
+	dev_info(&s->dev->dev, "litepcie_dma_init_gpu: GPU page table has %d entrie(s) of %ld bytes\n", s->gpu_dma_mapping->entries, GPU_PAGE_SIZE);
+
+	for (i = 0; i < s->gpu_dma_mapping->entries; i++)
+		dev_info(&s->dev->dev, "litepcie_dma_init_gpu: GPU page %d: 0x%llx\n", i, s->gpu_page_table->pages[i]->physical_address);
 
 	/* for each dma channel */
 	page = 0;
@@ -328,6 +339,7 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 			dmachan->reader_addr[j] = (uint32_t*)(nvp->physical_address + offset);
 			dmachan->reader_handle[j] = ((dma_addr_t)s->gpu_dma_mapping->dma_addresses[page]) + offset;
 			offset += DMA_BUFFER_SIZE;
+			dev_info(&s->dev->dev, "litepcie_dma_init_gpu: reader %d at phys 0x%px, DMA 0x%px\n", j, (void*)dmachan->reader_addr[j], (void*)dmachan->reader_handle[j]);
 
 			/* allocate wr */
 			if (offset + DMA_BUFFER_SIZE > GPU_PAGE_SIZE) {
@@ -343,6 +355,7 @@ static int litepcie_dma_init_gpu(struct litepcie_device *s, uint64_t addr, uint6
 			dmachan->writer_addr[j] = (uint32_t*)(nvp->physical_address + offset);
 			dmachan->writer_handle[j] = ((dma_addr_t)s->gpu_dma_mapping->dma_addresses[page]) + offset;
 			offset += DMA_BUFFER_SIZE;
+			dev_info(&s->dev->dev, "litepcie_dma_init_gpu: writer %d at phys 0x%px, DMA 0x%px\n", j, (void*)dmachan->writer_addr[j], (void*)dmachan->writer_handle[j]);
 		}
 	}
 
@@ -389,6 +402,8 @@ static int litepcie_dma_writer_start(struct litepcie_device *s, int chan_num)
 
 	dmachan = &s->chan[chan_num].dma;
 
+	dev_info(&s->dev->dev, "litepcie_dma_writer_start: chan %d\n", chan_num);
+
 	/* fill dma writer descriptors */
 	litepcie_writel(s, dmachan->base + PCIE_DMA_WRITER_ENABLE_OFFSET, 0);
 	litepcie_writel(s, dmachan->base + PCIE_DMA_WRITER_TABLE_FLUSH_OFFSET, 1);
@@ -427,6 +442,8 @@ static int litepcie_dma_writer_stop(struct litepcie_device *s, int chan_num)
 
 	dmachan = &s->chan[chan_num].dma;
 
+	dev_info(&s->dev->dev, "litepcie_dma_writer_stop: chan %d\n", chan_num);
+
 	/* flush and stop dma writer */
 	litepcie_writel(s, dmachan->base + PCIE_DMA_WRITER_TABLE_LOOP_PROG_N_OFFSET, 0);
 	litepcie_writel(s, dmachan->base + PCIE_DMA_WRITER_TABLE_FLUSH_OFFSET, 1);
@@ -453,6 +470,8 @@ static int litepcie_dma_reader_start(struct litepcie_device *s, int chan_num)
 		return -EINVAL;
 
 	dmachan = &s->chan[chan_num].dma;
+
+	dev_info(&s->dev->dev, "litepcie_dma_reader_start: chan %d\n", chan_num);
 
 	/* fill dma reader descriptors */
 	litepcie_writel(s, dmachan->base + PCIE_DMA_READER_ENABLE_OFFSET, 0);
@@ -492,6 +511,8 @@ static int litepcie_dma_reader_stop(struct litepcie_device *s, int chan_num)
 
 	dmachan = &s->chan[chan_num].dma;
 
+	dev_info(&s->dev->dev, "litepcie_dma_reader_stop: chan %d\n", chan_num);
+
 	/* flush and stop dma reader */
 	litepcie_writel(s, dmachan->base + PCIE_DMA_READER_TABLE_LOOP_PROG_N_OFFSET, 0);
 	litepcie_writel(s, dmachan->base + PCIE_DMA_READER_TABLE_FLUSH_OFFSET, 1);
@@ -511,6 +532,8 @@ void litepcie_stop_dma(struct litepcie_device *s)
 {
 	struct litepcie_dma_chan *dmachan;
 	int i;
+
+	dev_info(&s->dev->dev, "litepcie_stop_dma\n");
 
 	for (i = 0; i < s->channels; i++) {
 		dmachan = &s->chan[i].dma;
@@ -544,7 +567,7 @@ static irqreturn_t litepcie_interrupt(int irq, void *data)
 #endif
 
 #ifdef DEBUG_MSI
-	dev_dbg(&s->dev->dev, "MSI: 0x%x 0x%x\n", irq_vector, irq_enable);
+	dev_info(&s->dev->dev, "MSI: 0x%x 0x%x\n", irq_vector, irq_enable);
 #endif
 	irq_vector &= irq_enable;
 	clear_mask = 0;
@@ -561,7 +584,7 @@ static irqreturn_t litepcie_interrupt(int irq, void *data)
 				chan->dma.reader_hw_count += (1 << (ilog2(DMA_BUFFER_COUNT) + 16));
 			chan->dma.reader_hw_count_last = chan->dma.reader_hw_count;
 #ifdef DEBUG_MSI
-			dev_dbg(&s->dev->dev, "MSI DMA%d Reader buf: %lld\n", i,
+			dev_info(&s->dev->dev, "MSI DMA%d Reader buf: %lld\n", i,
 				chan->dma.reader_hw_count);
 #endif
 			wake_up_interruptible(&chan->wait_wr);
@@ -577,7 +600,7 @@ static irqreturn_t litepcie_interrupt(int irq, void *data)
 				chan->dma.writer_hw_count += (1 << (ilog2(DMA_BUFFER_COUNT) + 16));
 			chan->dma.writer_hw_count_last = chan->dma.writer_hw_count;
 #ifdef DEBUG_MSI
-			dev_dbg(&s->dev->dev, "MSI DMA%d Writer buf: %lld\n", i,
+			dev_info(&s->dev->dev, "MSI DMA%d Writer buf: %lld\n", i,
 				chan->dma.writer_hw_count);
 #endif
 			wake_up_interruptible(&chan->wait_rd);
@@ -705,10 +728,10 @@ static ssize_t litepcie_read(struct file *file, char __user *data, size_t size, 
 	}
 
 	if (overflows)
-		dev_dbg(&s->dev->dev, "Reading too late, %d buffers lost\n", overflows);
+		dev_info(&s->dev->dev, "Reading too late, %d buffers lost\n", overflows);
 
 #ifdef DEBUG_READ
-	dev_dbg(&s->dev->dev, "read: read %ld bytes out of %ld\n", size - len, size);
+	dev_info(&s->dev->dev, "read: read %ld bytes out of %ld\n", size - len, size);
 #endif
 
 	return size - len;
@@ -766,10 +789,10 @@ static ssize_t litepcie_write(struct file *file, const char __user *data, size_t
 	}
 
 	if (underflows)
-		dev_dbg(&s->dev->dev, "Writing too late, %d buffers lost\n", underflows);
+		dev_info(&s->dev->dev, "Writing too late, %d buffers lost\n", underflows);
 
 #ifdef DEBUG_WRITE
-	dev_dbg(&s->dev->dev, "write: write %ld bytes out of %ld\n", size - len, size);
+	dev_info(&s->dev->dev, "write: write %ld bytes out of %ld\n", size - len, size);
 #endif
 
 	return size - len;
@@ -845,9 +868,9 @@ static unsigned int litepcie_poll(struct file *file, poll_table *wait)
 	poll_wait(file, &chan->wait_wr, wait);
 
 #ifdef DEBUG_POLL
-	dev_dbg(&s->dev->dev, "poll: writer hw_count: %10lld / sw_count %10lld\n",
+	dev_info(&s->dev->dev, "poll: writer hw_count: %10lld / sw_count %10lld\n",
 	chan->dma.writer_hw_count, chan->dma.writer_sw_count);
-	dev_dbg(&s->dev->dev, "poll: reader hw_count: %10lld / sw_count %10lld\n",
+	dev_info(&s->dev->dev, "poll: reader hw_count: %10lld / sw_count %10lld\n",
 	chan->dma.reader_hw_count, chan->dma.reader_sw_count);
 #endif
 
