@@ -798,7 +798,7 @@ class LitePCIeDMA(Module, AutoCSR):
         with_synchronizer  = False,
         with_buffering     = False, buffering_depth=256*8, writer_buffering_depth=None, reader_buffering_depth=None,
         with_monitor       = False,
-        with_status        = False):
+        with_status        = True):
 
         # Writer/Reader ----------------------------------------------------------------------------
         writer = LitePCIeDMAWriter(
