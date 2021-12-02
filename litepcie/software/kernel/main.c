@@ -911,6 +911,87 @@ static int litepcie_flash_spi(struct litepcie_device *s, struct litepcie_ioctl_f
 }
 #endif
 
+static int litepcie_debug_dma_init(struct litepcie_device *s, struct litepcie_ioctl_debug_dma_init *m)
+{
+	int error;
+
+	size_t pin_size;
+	uint64_t virt_start;
+
+	if (!m->gpu) {
+		m->virt_addr = (uint64_t) dmam_alloc_coherent(
+				&s->dev->dev,
+				m->size,
+				&m->dma_handle,
+				GFP_KERNEL);
+		m->phys_addr = __pa(m->virt_addr);
+	} else {
+		// alignment as required by the NVIDIA driver
+		virt_start = (m->virt_addr & GPU_PAGE_MASK);
+		pin_size = m->virt_addr + m->size - virt_start;
+		if (!pin_size) {
+			dev_err(&s->dev->dev, "Error invalid memory size!\n");
+			error = -EINVAL;
+			goto do_exit;
+		}
+
+		// make the virtual memory accessible to other devices);
+		error = nvidia_p2p_get_pages(
+			0, 0, virt_start, pin_size, &s->gpu_page_table,
+			litepcie_dma_free_gpu, s);
+		if (error != 0) {
+			dev_err(&s->dev->dev, "Error in nvidia_p2p_get_pages()\n");
+			error = -EINVAL;
+			goto do_exit;
+		}
+
+		BUG_ON(!s->gpu_page_table);
+		if (! NVIDIA_P2P_PAGE_TABLE_VERSION_COMPATIBLE(s->gpu_page_table)) {
+			dev_err(&s->dev->dev, "Incompatible page table version 0x%08x\n",
+					s->gpu_page_table->version);
+			error = -EINVAL;
+			goto do_exit;
+		}
+
+		// make the physical memory accessible to other devices
+		error = nvidia_p2p_dma_map_pages(s->dev, s->gpu_page_table, &s->gpu_dma_mapping);
+		if (error != 0) {
+			dev_err(&s->dev->dev, "Error in nvidia_p2p_dma_map_pages()\n");
+			error = -EINVAL;
+			goto do_unlock_pages;
+		}
+
+		if (!NVIDIA_P2P_DMA_MAPPING_VERSION_COMPATIBLE(s->gpu_dma_mapping)) {
+			dev_err(&s->dev->dev, "Incompatible DMA mapping version 0x%08x\n",
+					s->gpu_dma_mapping->version);
+			error = -EINVAL;
+			goto do_unmap_pages;
+		}
+		BUG_ON(s->gpu_page_table->entries != s->gpu_dma_mapping->entries);
+
+		m->phys_addr = s->gpu_page_table->pages[0]->physical_address;
+		m->dma_handle = s->gpu_dma_mapping->dma_addresses[0];
+	}
+
+	dev_info(&s->dev->dev, "litepcie_debug_dma_init: %lld-byte buffer at 0x%px, physical address 0x%px, DMA handle 0x%px.\n", m->size, (void*)m->virt_addr, (void*)m->phys_addr, (void*)m->dma_handle);
+
+	return 0;
+
+do_unmap_pages:
+	nvidia_p2p_dma_unmap_pages(s->dev, s->gpu_page_table, s->gpu_dma_mapping);
+do_unlock_pages:
+	nvidia_p2p_put_pages(0, 0, s->gpu_virt_start, s->gpu_page_table);
+do_exit:
+	return error;
+}
+
+static int litepcie_debug_dma_read(struct litepcie_device *s, struct litepcie_ioctl_debug_dma_read *m)
+{
+	// hack to read kernel-allocated memory (GFP_USER doesn't seem to work)
+	m->status = *(uint32_t*)m->virt_addr;
+	return 0;
+}
+
 static long litepcie_ioctl(struct file *file, unsigned int cmd,
 			   unsigned long arg)
 {
@@ -1156,6 +1237,40 @@ static long litepcie_ioctl(struct file *file, unsigned int cmd,
 			break;
 		}
 
+	}
+		break;
+	case LITEPCIE_IOCTL_DEBUG_DMA_INIT:
+	{
+		struct litepcie_ioctl_debug_dma_init m;
+
+		if (copy_from_user(&m, (void *)arg, sizeof(m))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		litepcie_debug_dma_init(chan->litepcie_dev, &m);
+
+		if (copy_to_user((void *)arg, &m, sizeof(m))) {
+			ret = -EFAULT;
+			break;
+		}
+	}
+		break;
+	case LITEPCIE_IOCTL_DEBUG_DMA_READ:
+	{
+		struct litepcie_ioctl_debug_dma_read m;
+
+		if (copy_from_user(&m, (void *)arg, sizeof(m))) {
+			ret = -EFAULT;
+			break;
+		}
+
+		litepcie_debug_dma_read(chan->litepcie_dev, &m);
+
+		if (copy_to_user((void *)arg, &m, sizeof(m))) {
+			ret = -EFAULT;
+			break;
+		}
 	}
 		break;
 	default:

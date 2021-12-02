@@ -68,7 +68,7 @@ void litepcie_dma_init_cpu(int fd) {
 void litepcie_dma_init_gpu(int fd, void* addr, size_t size) {
     struct litepcie_ioctl_dma_init m;
     m.use_gpu = 1;
-    m.gpu_addr = addr;
+    m.gpu_addr = (uint64_t)addr;
     m.gpu_size = size;
     explain_ioctl_or_die(fd, LITEPCIE_IOCTL_DMA_INIT, &m);
 }
@@ -93,6 +93,27 @@ void litepcie_dma_reader(int fd, uint8_t enable, int64_t *hw_count, int64_t *sw_
     explain_ioctl_or_die(fd, LITEPCIE_IOCTL_DMA_READER, &m);
     *hw_count = m.hw_count;
     *sw_count = m.sw_count;
+}
+
+void litepcie_debug_dma_init(int fd, uint8_t gpu, size_t size, void **virt_addr, uint64_t *phys_addr, uint64_t *dma_handle)
+{
+    struct litepcie_ioctl_debug_dma_init m;
+    m.gpu = gpu;
+    m.size = size;
+    m.virt_addr = (uint64_t)*virt_addr;
+    explain_ioctl_or_die(fd, LITEPCIE_IOCTL_DEBUG_DMA_INIT, &m);
+    *virt_addr = (void*)m.virt_addr;
+    *phys_addr = m.phys_addr;
+    *dma_handle = m.dma_handle;
+    return;
+}
+
+uint32_t litepcie_debug_dma_read(int fd, void* virt_addr)
+{
+    struct litepcie_ioctl_debug_dma_read m;
+    m.virt_addr = (uint64_t)virt_addr;
+    explain_ioctl_or_die(fd, LITEPCIE_IOCTL_DEBUG_DMA_READ, &m);
+    return m.status;
 }
 
 /* lock */

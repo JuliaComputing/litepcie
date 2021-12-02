@@ -316,23 +316,21 @@ static int check_pn_data(uint32_t *buf, int count, uint32_t *pseed)
     return errors;
 }
 
+#define DMA_STATUS_SIZE 16*4
+
 static void debug(void)
 {
     struct pollfd fds;
-    int ret;
-
-    char *buf_rd, *buf_wr;
-    int errors;
-
-    int64_t reader_hw_count, reader_sw_count;
-    int64_t writer_hw_count, writer_sw_count;
-
-    struct litepcie_ioctl_mmap_dma_info mmap_dma_info;
-    struct litepcie_ioctl_mmap_dma_update mmap_dma_update;
 
     CUdevice gpu_dev;
     CUcontext gpu_ctx;
     CUdeviceptr gpu_buf;
+
+    void* cpu_buf = NULL;
+
+    void* virt_addr = NULL;
+    uint64_t phys_addr = 0;
+    uint64_t dma_handle = 0;
 
     signal(SIGINT, intHandler);
 
@@ -343,179 +341,58 @@ static void debug(void)
         exit(1);
     }
 
-    /* start dma */
+    /* allocate and initialize the status buffer */
     if (cuda_device_num >= 0) {
+        // a CPU buffer for copying
+        cpu_buf = malloc(DMA_STATUS_SIZE);
+        memset(cpu_buf, 0, DMA_STATUS_SIZE);
+
         checkError(cuInit(0));
 
         checkError(cuDeviceGet(&gpu_dev, cuda_device_num));
 
         checkError(cuCtxCreate(&gpu_ctx, 0, gpu_dev));
 
-        printf("DEBUG: Allocating %d bytes of GPU memory.\n", 2*DMA_BUFFER_TOTAL_SIZE);
-        checkError(cuMemAlloc(&gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE));
+        checkError(cuMemAlloc(&gpu_buf, DMA_STATUS_SIZE));
 
         unsigned int flag = 1;
         checkError(cuPointerSetAttribute(&flag, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, gpu_buf));
 
-        litepcie_dma_init_gpu(fds.fd, (void*)gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE);
+        checkError(cuMemcpyHtoD(gpu_buf, cpu_buf, DMA_STATUS_SIZE));
+
+        virt_addr = (void*)gpu_buf;
+        litepcie_debug_dma_init(fds.fd, 1, DMA_STATUS_SIZE, &virt_addr, &phys_addr, &dma_handle);
     } else {
-        litepcie_dma_init_cpu(fds.fd);
+        // kernel does the allocation
+        litepcie_debug_dma_init(fds.fd, 0, DMA_STATUS_SIZE, &virt_addr, &phys_addr, &dma_handle);
     }
+    printf("DEBUG: Allocated status buffer at %p, located at %p, DMA handle %p.\n", virt_addr, (void*)phys_addr, (void*)dma_handle);
 
-    /* request dma */
-    if ((litepcie_request_dma_reader(fds.fd) == 0) |
-        (litepcie_request_dma_writer(fds.fd) == 0)) {
-        printf("DMA not available, exiting.\n");
-        exit(1);
-    }
-
-    /* enable dma loopback*/
-    litepcie_dma(fds.fd, 1);
-
-    /* mmap dma buffer */
-    if (explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_INFO, &mmap_dma_info) != 0) {
-        fprintf(stderr, "LITEPCIE_IOCTL_MMAP_DMA_INFO error, exiting.\n");
-        exit(1);
-    }
-    buf_rd = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_READ,
-        MAP_SHARED, fds.fd, mmap_dma_info.dma_rx_buf_offset);
-    if (buf_rd == MAP_FAILED) {
-        fprintf(stderr, "MMAP failed, exiting.\n");
-        exit(1);
-    }
-    buf_wr = mmap(NULL, DMA_BUFFER_TOTAL_SIZE, PROT_WRITE,
-            MAP_SHARED, fds.fd, mmap_dma_info.dma_tx_buf_offset);
-    if (buf_wr == MAP_FAILED) {
-        fprintf(stderr, "MMAP failed, exiting.\n");
-        exit(1);
-    }
-
-    /* wait until we can write to a DMA buffer */
-    fds.events = POLLOUT;
-    while (true) {
-        printf("DEBUG: Poll?\n");
-        ret = poll(&fds, 1, 100);
-        if (!keep_running) {
-            goto cleanup;
-        } else if (ret < 0) {
-            perror("poll()");
-            goto cleanup;
-        } else if (ret == 0) {
-            printf("DEBUG: Poll timed out\n");
-        } else if (fds.revents & POLLOUT) {
-            printf("DEBUG: Ready to write\n");
-            break;
-        } else {
-            printf("DEBUG: Poll: %d\n", fds.revents);
-        }
-    }
-
-    /* set / get initial dma counters */
-    reader_hw_count=0;
-    reader_sw_count=0;
-    writer_hw_count=0;
-    writer_sw_count=0;
-    litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-    litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-    printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-    printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
-
-    // XXX: this is where everything starts to fail on the GPU. as soon as DMA
-    //      is enabled, the driver will make the FPGA read and write and hang.
-    // while (keep_running) {
-        usleep(10000);
-        litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-        litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-        printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-        printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
-
-        // if (writer_hw_count > 0 || reader_hw_count > 0)
-            // break;
-    // }
-    goto cleanup;
-
-    /* write a single buffer */
-    for (int i = 0; i < DMA_BUFFER_SIZE/sizeof(int); i++)
-        ((int*)buf_wr)[i] = i;
-    mmap_dma_update.sw_count = 1;
-    explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update);
-    printf("DEBUG: Written buffer\n");
-
-    /* verify the buffer */
+    /* show initial status */
     if (cuda_device_num >= 0) {
-        // check whether GPU memory, initialized by writing to mmapped memory,
-        // can be read back and verified using CUDA API calls.
-        void* cpu_buf = malloc(2*DMA_BUFFER_TOTAL_SIZE);
-        checkError(cuMemcpyDtoH(cpu_buf, gpu_buf, 2*DMA_BUFFER_TOTAL_SIZE));
-
-        errors = 0;
-        for (int i = 0; i < DMA_BUFFER_SIZE/sizeof(int); i++)
-            if (((int*)cpu_buf)[i] != i)
-                errors += 1;
-        printf("DEBUG: Written buffer, %d errors\n", errors);
-        if (errors)
-            goto cleanup;
+        checkError(cuMemcpyDtoH(cpu_buf, gpu_buf, DMA_STATUS_SIZE));
+        printf("DEBUG: DMA status: 0x%04x\n", *(int*)cpu_buf);
+    } else {
+        printf("DEBUG: DMA status: 0x%04x\n", litepcie_debug_dma_read(fds.fd, virt_addr));
     }
 
-    /* set / get dma counters */
-    litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-    litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-    printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-    printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
+    /* enable PCIe DMA status */
+    printf("DEBUG: Requesting DMA status.\n");
+    litepcie_writel(fds.fd, CSR_PCIE_DMA0_STATUS_ADDRESS_ADDR, (uint32_t)dma_handle);
+    litepcie_writel(fds.fd, CSR_PCIE_DMA0_STATUS_CONTROL_ADDR, 1);
 
-    /* wait until we can read from a DMA buffer */
-    fds.events = POLLIN;
-    while (true) {
-        printf("DEBUG: Poll?\n");
-        ret = poll(&fds, 1, 100);
-        if (!keep_running) {
-            goto cleanup;
-        } else if (ret < 0) {
-            perror("poll()");
-            goto cleanup;
-        } else if (ret == 0) {
-            printf("DEBUG: Poll timed out\n");
-        } else if (fds.revents & POLLIN) {
-            printf("DEBUG: Ready to read\n");
-            break;
-        } else {
-            printf("DEBUG: Poll: %d\n", fds.revents);
-        }
+    /* trigger a DMA status update from software */
+    litepcie_writel(fds.fd, CSR_PCIE_DMA0_STATUS_CONTROL_ADDR,  1 | (0b11 << 4));
+
+    usleep(10000);
+
+    /* show status */
+    if (cuda_device_num >= 0) {
+        checkError(cuMemcpyDtoH(cpu_buf, gpu_buf, DMA_STATUS_SIZE));
+        printf("DEBUG: DMA status: 0x%04x\n", *(int*)cpu_buf);
+    } else {
+        printf("DEBUG: DMA status: 0x%04x\n", litepcie_debug_dma_read(fds.fd, virt_addr));
     }
-
-    /* set / get dma counters */
-    litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-    litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-    printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-    printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
-
-    /* read a single buffer */
-    errors = 0;
-    for (int i = 0; i < DMA_BUFFER_SIZE/sizeof(int); i++)
-        if (((int*)buf_wr)[i] != i)
-            errors += 1;
-    printf("DEBUG: Read buffer, %d errors\n", errors);
-    mmap_dma_update.sw_count = 1;
-    explain_ioctl_or_die(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE, &mmap_dma_update);
-
-    /* set / get dma counters */
-    litepcie_dma_writer(fds.fd, 1, &writer_hw_count, &writer_sw_count);
-    litepcie_dma_reader(fds.fd, 1, &reader_hw_count, &reader_sw_count);
-    printf("DEBUG: Writer HW count: %ld, SW count: %ld\n", writer_hw_count, writer_sw_count);
-    printf("DEBUG: Reader HW count: %ld, SW count: %ld\n", reader_hw_count, reader_sw_count);
-
-cleanup:
-    printf("DEBUG: Clean-up.\n");
-
-    /* disable dma */
-    litepcie_dma_reader(fds.fd, 0, &reader_hw_count, &reader_sw_count);
-    litepcie_dma_writer(fds.fd, 0, &writer_hw_count, &writer_sw_count);
-
-    litepcie_release_dma_reader(fds.fd);
-    litepcie_release_dma_writer(fds.fd);
-
-    munmap(buf_rd, mmap_dma_info.dma_rx_buf_size * mmap_dma_info.dma_rx_buf_count);
-    munmap(buf_wr, mmap_dma_info.dma_tx_buf_size * mmap_dma_info.dma_tx_buf_count);
 
     close(fds.fd);
 }

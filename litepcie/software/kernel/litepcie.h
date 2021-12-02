@@ -78,6 +78,19 @@ struct litepcie_ioctl_mmap_dma_update {
 	int64_t sw_count;
 };
 
+struct litepcie_ioctl_debug_dma_init {
+	uint8_t gpu;
+	uint64_t size;
+	uint64_t virt_addr;
+	uint64_t phys_addr;
+	uint64_t dma_handle;
+};
+
+struct litepcie_ioctl_debug_dma_read {
+	uint64_t virt_addr;
+	uint32_t status;
+};
+
 #define LITEPCIE_IOCTL 'S'
 
 #define LITEPCIE_IOCTL_REG               _IOWR(LITEPCIE_IOCTL,  0, struct litepcie_ioctl_reg)
@@ -92,5 +105,8 @@ struct litepcie_ioctl_mmap_dma_update {
 #define LITEPCIE_IOCTL_LOCK                      _IOWR(LITEPCIE_IOCTL, 25, struct litepcie_ioctl_lock)
 #define LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE    _IOW(LITEPCIE_IOCTL,  26, struct litepcie_ioctl_mmap_dma_update)
 #define LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE    _IOW(LITEPCIE_IOCTL,  27, struct litepcie_ioctl_mmap_dma_update)
+
+#define LITEPCIE_IOCTL_DEBUG_DMA_INIT            _IOWR(LITEPCIE_IOCTL, 28, struct litepcie_ioctl_debug_dma_init)
+#define LITEPCIE_IOCTL_DEBUG_DMA_READ            _IOWR(LITEPCIE_IOCTL, 29, struct litepcie_ioctl_debug_dma_read)
 
 #endif /* _LINUX_LITEPCIE_H */

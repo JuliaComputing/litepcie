@@ -30,6 +30,9 @@ uint8_t litepcie_request_dma_writer(int fd);
 void litepcie_release_dma_reader(int fd);
 void litepcie_release_dma_writer(int fd);
 
+void litepcie_debug_dma_init(int fd, uint8_t gpu, size_t size, void **virt_addr, uint64_t *phys_addr, uint64_t *dma_handle);
+uint32_t litepcie_debug_dma_read(int fd, void* virt_addr);
+
 #define countof(x) (sizeof(x) / sizeof(x[0]))
 
 /* flash */
