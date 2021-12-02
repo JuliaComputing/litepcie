@@ -394,7 +394,7 @@ class S7PCIEPHY(Module, AutoCSR):
                 'Interface_Width': '64_bit',
                 'Legacy_Interrupt': None,
                 'Link_Speed': '5.0_GT/s',
-                'MSI_64b': False,
+                'MSI_64b': True,
                 'Max_Payload_Size': '512_bytes',
                 'Maximum_Link_Width': f'X{self.nlanes}',
                 'PCIe_Blk_Locn': 'X0Y0',
