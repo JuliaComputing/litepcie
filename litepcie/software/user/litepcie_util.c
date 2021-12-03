@@ -366,33 +366,39 @@ static void debug(void)
         // kernel does the allocation
         litepcie_debug_dma_init(fds.fd, 0, DMA_STATUS_SIZE, &virt_addr, &phys_addr, &dma_handle);
     }
-    printf("DEBUG: Allocated status buffer at %p, located at %p, DMA handle %p.\n", virt_addr, (void*)phys_addr, (void*)dma_handle);
+    printf("DEBUG: Allocated buffer at %p, located at %p, DMA handle %p.\n", virt_addr, (void*)phys_addr, (void*)dma_handle);
 
     /* show initial status */
     if (cuda_device_num >= 0) {
         checkError(cuMemcpyDtoH(cpu_buf, gpu_buf, DMA_STATUS_SIZE));
-        printf("DEBUG: DMA status: 0x%04x\n", *(int*)cpu_buf);
+        printf("DEBUG: Initial memory: 0x%04x\n", *(int*)cpu_buf);
     } else {
-        printf("DEBUG: DMA status: 0x%04x\n", litepcie_debug_dma_read(fds.fd, virt_addr));
+        printf("DEBUG: Initial memory: 0x%04x\n", litepcie_debug_dma_read(fds.fd, virt_addr));
     }
 
-    /* enable PCIe DMA status */
-    printf("DEBUG: Requesting DMA status.\n");
-    litepcie_writel(fds.fd, CSR_PCIE_DMA0_STATUS_ADDRESS_ADDR, (uint32_t)dma_handle);
-    litepcie_writel(fds.fd, CSR_PCIE_DMA0_STATUS_CONTROL_ADDR, 1);
+    printf("DEBUG: Issueing DMA write.\n");
+    litepcie_writel(fds.fd, CSR_PCIE_TESTER_ADDRESS_ADDR, (uint32_t)dma_handle);
+    litepcie_writel(fds.fd, CSR_PCIE_TESTER_WRITE_DATA_ADDR, 0x5aa55aa5);
+    litepcie_writel(fds.fd, CSR_PCIE_TESTER_WRITE_ADDR, 1);
 
-    /* trigger a DMA status update from software */
-    litepcie_writel(fds.fd, CSR_PCIE_DMA0_STATUS_CONTROL_ADDR,  1 | (0b11 << 4));
+    printf("DEBUG: Waiting for DMA.\n");
+    while (litepcie_readl(fds.fd, CSR_PCIE_TESTER_DONE_ADDR) == 0) {}
 
-    usleep(10000);
-
-    /* show status */
     if (cuda_device_num >= 0) {
         checkError(cuMemcpyDtoH(cpu_buf, gpu_buf, DMA_STATUS_SIZE));
-        printf("DEBUG: DMA status: 0x%04x\n", *(int*)cpu_buf);
+        printf("DEBUG: Memory: 0x%04x\n", *(int*)cpu_buf);
     } else {
-        printf("DEBUG: DMA status: 0x%04x\n", litepcie_debug_dma_read(fds.fd, virt_addr));
+        printf("DEBUG: Memory: 0x%04x\n", litepcie_debug_dma_read(fds.fd, virt_addr));
     }
+
+    printf("DEBUG: Issueing DMA read.\n");
+    litepcie_writel(fds.fd, CSR_PCIE_TESTER_ADDRESS_ADDR, (uint32_t)dma_handle);
+    litepcie_writel(fds.fd, CSR_PCIE_TESTER_READ_ADDR, 1);
+
+    printf("DEBUG: Waiting for DMA.\n");
+    while (litepcie_readl(fds.fd, CSR_PCIE_TESTER_DONE_ADDR) == 0) {}
+
+    printf("DEBUG: Memory: 0x%04x\n", litepcie_readl(fds.fd, CSR_PCIE_TESTER_READ_DATA_ADDR));
 
     close(fds.fd);
 }
