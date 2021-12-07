@@ -183,7 +183,10 @@ static void litepcie_record(const char *filename, uint32_t size)
 
                 /* update dma sw_count*/
                 mmap_dma_update.sw_count = writer_sw_count + buf_count;
-                ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE, &mmap_dma_update);
+                if (ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE, &mmap_dma_update) != 0) {
+                    printf("LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE error, exiting.\n");
+                    goto exit;
+                }
 
             /* non zero-copy mode */
             } else {
@@ -351,7 +354,10 @@ static void litepcie_play(const char *filename, uint32_t loops)
 
                 /* update dma sw_count*/
                 mmap_dma_update.sw_count = reader_sw_count + buf_count;
-                ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update);
+                if (ioctl(fds.fd, LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE, &mmap_dma_update) != 0) {
+                    printf("LITEPCIE_IOCTL_MMAP_DMA_READER_UPDATE error, exiting.\n");
+                    goto exit;
+                }
 
                 first_loop = 0;
             }

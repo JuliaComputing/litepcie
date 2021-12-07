@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <sys/poll.h>
 #include <time.h>
+#include <errno.h>
 
 #include "litepcie.h"
 #include "config.h"
@@ -35,11 +36,19 @@ int64_t get_time_ms(void)
 
 /* ioctl */
 
+#define checked_ioctl(...) { _check_ioctl(ioctl(__VA_ARGS__), __FILE__, __LINE__); }
+void _check_ioctl(int status, const char *file, int line) {
+    if (status) {
+        fprintf(stderr, "Failed ioctl at %s:%d: %s\n", file, line, strerror(errno));
+        abort();
+    }
+}
+
 uint32_t litepcie_readl(int fd, uint32_t addr) {
     struct litepcie_ioctl_reg m;
     m.is_write = 0;
     m.addr = addr;
-    ioctl(fd, LITEPCIE_IOCTL_REG, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_REG, &m);
     return m.val;
 }
 
@@ -48,26 +57,26 @@ void litepcie_writel(int fd, uint32_t addr, uint32_t val) {
     m.is_write = 1;
     m.addr = addr;
     m.val = val;
-    ioctl(fd, LITEPCIE_IOCTL_REG, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_REG, &m);
 }
 
 void litepcie_reload(int fd) {
     struct litepcie_ioctl_icap m;
 	m.addr = 0x4;
 	m.data = 0xf;
-    ioctl(fd, LITEPCIE_IOCTL_ICAP, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_ICAP, &m);
 }
 
 void litepcie_dma(int fd, uint8_t loopback_enable) {
     struct litepcie_ioctl_dma m;
     m.loopback_enable = loopback_enable;
-    ioctl(fd, LITEPCIE_IOCTL_DMA, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_DMA, &m);
 }
 
 void litepcie_dma_writer(int fd, uint8_t enable, int64_t *hw_count, int64_t *sw_count) {
     struct litepcie_ioctl_dma_writer m;
     m.enable = enable;
-    ioctl(fd, LITEPCIE_IOCTL_DMA_WRITER, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_DMA_WRITER, &m);
     *hw_count = m.hw_count;
     *sw_count = m.sw_count;
 }
@@ -75,7 +84,7 @@ void litepcie_dma_writer(int fd, uint8_t enable, int64_t *hw_count, int64_t *sw_
 void litepcie_dma_reader(int fd, uint8_t enable, int64_t *hw_count, int64_t *sw_count) {
     struct litepcie_ioctl_dma_reader m;
     m.enable = enable;
-    ioctl(fd, LITEPCIE_IOCTL_DMA_READER, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_DMA_READER, &m);
     *hw_count = m.hw_count;
     *sw_count = m.sw_count;
 }
@@ -88,7 +97,7 @@ uint8_t litepcie_request_dma_reader(int fd) {
     m.dma_writer_request = 0;
     m.dma_reader_release = 0;
     m.dma_writer_release = 0;
-    ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
     return m.dma_reader_status;
 }
 
@@ -98,7 +107,7 @@ uint8_t litepcie_request_dma_writer(int fd) {
     m.dma_writer_request = 1;
     m.dma_reader_release = 0;
     m.dma_writer_release = 0;
-    ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
     return m.dma_writer_status;
 }
 
@@ -108,7 +117,7 @@ void litepcie_release_dma_reader(int fd) {
     m.dma_writer_request = 0;
     m.dma_reader_release = 1;
     m.dma_writer_release = 0;
-    ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
 }
 
 void litepcie_release_dma_writer(int fd) {
@@ -117,7 +126,7 @@ void litepcie_release_dma_writer(int fd) {
     m.dma_writer_request = 0;
     m.dma_reader_release = 0;
     m.dma_writer_release = 1;
-    ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_LOCK, &m);
 }
 
 #ifdef CSR_FLASH_BASE
@@ -138,7 +147,7 @@ static uint64_t flash_spi(int fd, int tx_len, uint8_t cmd,
     flash_spi_cs(fd, 0);
     m.tx_len = tx_len;
     m.tx_data = tx_data | ((uint64_t)cmd << 32);
-    ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
+    checked_ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
     flash_spi_cs(fd, 1);
     return m.rx_data;
 }
@@ -203,13 +212,13 @@ static void flash_write_buffer(int fd, uint32_t addr, uint8_t *buf, uint16_t siz
         /* send cmd */
         m.tx_len = 32;
         m.tx_data = ((uint64_t)FLASH_PP << 32) | ((uint64_t)addr << 8);
-        ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
+        checked_ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
 
         /* send bytes */
         for (i=0; i<size; i++) {
             m.tx_len = 8;
             m.tx_data = ((uint64_t)buf[i] << 32);
-            ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
+            checked_ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
         }
 
         /* release cs_n */
@@ -238,12 +247,12 @@ static void litepcie_flash_read_buffer(int fd, uint32_t addr, uint8_t *buf, uint
         /* send cmd */
         m.tx_len = 32;
         m.tx_data = ((uint64_t)FLASH_READ << 32) | ((uint64_t)addr << 8);
-        ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
+        checked_ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
 
         /* read bytes */
         for (i=0; i<size; i++) {
             m.tx_len = 8;
-            ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
+            checked_ioctl(fd, LITEPCIE_IOCTL_FLASH, &m);
             buf[i] = m.rx_data;
         }
 
