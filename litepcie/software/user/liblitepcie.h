@@ -54,4 +54,6 @@ int litepcie_flash_write(int fd,
                      void (*progress_cb)(void *opaque, const char *fmt, ...),
                      void *opaque);
 
+uint32_t litepcie_temp(int fd);
+
 #endif /* LITEPCIE_LIB_H */

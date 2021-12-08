@@ -623,6 +623,236 @@ static int litepcie_flash_spi(struct litepcie_device *s, struct litepcie_ioctl_f
 }
 #endif
 
+#ifdef CSR_I2C_BASE
+
+/* I2C frequency defaults to a safe value in range 10-100 kHz to be compatible with SMBus */
+#ifndef I2C_FREQ_HZ
+#define I2C_FREQ_HZ  100000
+#endif
+
+#define I2C_DELAY(n)	  udelay((n)*1000000/I2C_FREQ_HZ)
+
+#define I2C_ADDR_WR(addr) ((addr) << 1)
+#define I2C_ADDR_RD(addr) (((addr) << 1) | 1u)
+
+static inline void i2c_oe_scl_sda(struct litepcie_device *s, bool oe, bool scl, bool sda)
+{
+	litepcie_writel(s, CSR_I2C_W_ADDR,
+		((oe & 1)  << CSR_I2C_W_OE_OFFSET)	|
+		((scl & 1) << CSR_I2C_W_SCL_OFFSET) |
+		((sda & 1) << CSR_I2C_W_SDA_OFFSET)
+	);
+}
+
+// START condition: 1-to-0 transition of SDA when SCL is 1
+static void i2c_start(struct litepcie_device *s)
+{
+	i2c_oe_scl_sda(s, 1, 1, 1);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 1, 1, 0);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 1, 0, 0);
+	I2C_DELAY(1);
+}
+
+// STOP condition: 0-to-1 transition of SDA when SCL is 1
+static void i2c_stop(struct litepcie_device *s)
+{
+	i2c_oe_scl_sda(s, 1, 0, 0);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 1, 1, 0);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 1, 1, 1);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 0, 1, 1);
+}
+
+// Call when in the middle of SCL low, advances one clk period
+static void i2c_transmit_bit(struct litepcie_device *s, int value)
+{
+	i2c_oe_scl_sda(s, 1, 0, value);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 1, 1, value);
+	I2C_DELAY(2);
+	i2c_oe_scl_sda(s, 1, 0, value);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 0, 0, 0);  // release line
+}
+
+// Call when in the middle of SCL low, advances one clk period
+static int i2c_receive_bit(struct litepcie_device *s)
+{
+	int value;
+	i2c_oe_scl_sda(s, 0, 0, 0);
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 0, 1, 0);
+	I2C_DELAY(1);
+	// read in the middle of SCL high
+	value = litepcie_readl(s, CSR_I2C_R_ADDR) & 1;
+	I2C_DELAY(1);
+	i2c_oe_scl_sda(s, 0, 0, 0);
+	I2C_DELAY(1);
+	return value;
+}
+
+// Send data byte and return 1 if slave sends ACK
+static bool i2c_transmit_byte(struct litepcie_device *s, unsigned char data)
+{
+	int i;
+	int ack;
+
+	// SCL should have already been low for 1/4 cycle
+	i2c_oe_scl_sda(s, 0, 0, 0);
+	for (i = 0; i < 8; ++i) {
+		// MSB first
+		i2c_transmit_bit(s, (data & (1 << 7)) != 0);
+		data <<= 1;
+	}
+	ack = i2c_receive_bit(s);
+
+	// 0 from slave means ack
+	return ack == 0;
+}
+
+// Read data byte and send ACK if ack=1
+static unsigned char i2c_receive_byte(struct litepcie_device *s, bool ack)
+{
+	int i;
+	unsigned char data = 0;
+
+	for (i = 0; i < 8; ++i) {
+		data <<= 1;
+		data |= i2c_receive_bit(s);
+	}
+	i2c_transmit_bit(s, !ack);
+
+	return data;
+}
+
+// Reset line state
+void i2c_reset(struct litepcie_device *s)
+{
+	int i;
+	i2c_oe_scl_sda(s, 1, 1, 1);
+	I2C_DELAY(8);
+	for (i = 0; i < 9; ++i) {
+		i2c_oe_scl_sda(s, 1, 0, 1);
+		I2C_DELAY(2);
+		i2c_oe_scl_sda(s, 1, 1, 1);
+		I2C_DELAY(2);
+	}
+	i2c_oe_scl_sda(s, 0, 0, 1);
+	I2C_DELAY(1);
+	i2c_stop(s);
+	i2c_oe_scl_sda(s, 0, 1, 1);
+	I2C_DELAY(8);
+}
+
+/*
+ * Read slave memory over I2C starting at given address
+ *
+ * First writes the memory starting address, then reads the data:
+ *   START WR(slaveaddr) WR(addr) STOP START WR(slaveaddr) RD(data) RD(data) ... STOP
+ * Some chips require that after transmiting the address, there will be no STOP in between:
+ *   START WR(slaveaddr) WR(addr) START WR(slaveaddr) RD(data) RD(data) ... STOP
+ */
+bool i2c_read(struct litepcie_device *s, unsigned char slave_addr, unsigned char addr, unsigned char *data, unsigned int len, bool send_stop)
+{
+	int i;
+
+	i2c_start(s);
+
+	if(!i2c_transmit_byte(s, I2C_ADDR_WR(slave_addr))) {
+		i2c_stop(s);
+		return false;
+	}
+	if(!i2c_transmit_byte(s, addr)) {
+		i2c_stop(s);
+		return false;
+	}
+
+	if (send_stop) {
+		i2c_stop(s);
+	}
+	i2c_start(s);
+
+	if(!i2c_transmit_byte(s, I2C_ADDR_RD(slave_addr))) {
+		i2c_stop(s);
+		return false;
+	}
+	for (i = 0; i < len; ++i) {
+		data[i] = i2c_receive_byte(s, i != len - 1);
+	}
+
+	dev_info(&s->dev->dev, "i2c_read: slave_addr=0x%02x, addr=0x%02x, len=%d, data=0x%02x\n", slave_addr, addr, len, data[0]);
+	i2c_stop(s);
+
+	return true;
+}
+
+/*
+ * Write slave memory over I2C starting at given address
+ *
+ * First writes the memory starting address, then writes the data:
+ *   START WR(slaveaddr) WR(addr) WR(data) WR(data) ... STOP
+ */
+bool i2c_write(struct litepcie_device *s, unsigned char slave_addr, unsigned char addr, const unsigned char *data, unsigned int len)
+{
+	int i;
+
+	i2c_start(s);
+
+	if(!i2c_transmit_byte(s, I2C_ADDR_WR(slave_addr))) {
+		i2c_stop(s);
+		return false;
+	}
+	if(!i2c_transmit_byte(s, addr)) {
+		i2c_stop(s);
+		return false;
+	}
+	for (i = 0; i < len; ++i) {
+		if(!i2c_transmit_byte(s, data[i])) {
+			i2c_stop(s);
+			return false;
+		}
+	}
+
+	i2c_stop(s);
+
+	return true;
+}
+
+/*
+ * Poll I2C slave at given address, return true if it sends an ACK back
+ */
+bool i2c_poll(struct litepcie_device *s, unsigned char slave_addr)
+{
+    bool result;
+
+    i2c_start(s);
+    result = i2c_transmit_byte(s, I2C_ADDR_RD(slave_addr));
+    i2c_stop(s);
+
+    return result;
+}
+
+// localparam XTRX_I2C_DEV_LP_FPGA = 8'b0_110_0000;
+// localparam XTRX_I2C_DEV_DAC     = 8'b0_110_0010;
+// localparam XTRX_I2C_DEV_TMP     = 8'b0_100_1010;
+// localparam XTRX_I2C_DEV_LP_LMS  = 8'b1_110_0000;
+
+static int litepcie_temp(struct litepcie_device *s, struct litepcie_ioctl_temp *m)
+{
+	// XXX: this should fail
+	if (!i2c_poll(s, 0x01))
+		return -EIO;
+	if (!i2c_read(s, 0x4a, 0x00, (char*) &m->val, 2, false))
+		return -EIO;
+	return 0;
+}
+
+#endif
+
 static long litepcie_ioctl(struct file *file, unsigned int cmd,
 			   unsigned long arg)
 {
@@ -684,6 +914,21 @@ static long litepcie_ioctl(struct file *file, unsigned int cmd,
 		litepcie_writel(dev, CSR_ICAP_ADDR_ADDR, m.addr);
 		litepcie_writel(dev, CSR_ICAP_DATA_ADDR, m.data);
 		litepcie_writel(dev, CSR_ICAP_WRITE_ADDR, 1);
+	}
+	break;
+#endif
+#ifdef CSR_I2C_BASE
+	case LITEPCIE_IOCTL_TEMP:
+	{
+		struct litepcie_ioctl_temp m;
+
+		ret = litepcie_temp(dev, &m);
+		if (ret == 0) {
+			if (copy_to_user((void *)arg, &m, sizeof(m))) {
+				ret = -EFAULT;
+				break;
+			}
+		}
 	}
 	break;
 #endif

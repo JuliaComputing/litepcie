@@ -68,6 +68,10 @@ struct litepcie_ioctl_mmap_dma_info {
 	uint64_t dma_rx_buf_count;
 };
 
+struct litepcie_ioctl_temp {
+	uint32_t val;
+};
+
 struct litepcie_ioctl_mmap_dma_update {
 	int64_t sw_count;
 };
@@ -77,6 +81,7 @@ struct litepcie_ioctl_mmap_dma_update {
 #define LITEPCIE_IOCTL_REG               _IOWR(LITEPCIE_IOCTL,  0, struct litepcie_ioctl_reg)
 #define LITEPCIE_IOCTL_FLASH             _IOWR(LITEPCIE_IOCTL,  1, struct litepcie_ioctl_flash)
 #define LITEPCIE_IOCTL_ICAP              _IOWR(LITEPCIE_IOCTL,  2, struct litepcie_ioctl_icap)
+#define LITEPCIE_IOCTL_TEMP              _IOR(LITEPCIE_IOCTL,  3, struct litepcie_ioctl_temp)
 
 #define LITEPCIE_IOCTL_DMA                       _IOW(LITEPCIE_IOCTL,  20, struct litepcie_ioctl_dma)
 #define LITEPCIE_IOCTL_DMA_WRITER                _IOWR(LITEPCIE_IOCTL, 21, struct litepcie_ioctl_dma_writer)

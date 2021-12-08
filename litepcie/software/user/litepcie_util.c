@@ -46,6 +46,18 @@ void intHandler(int dummy) {
 
 /* info */
 
+const char *int_to_binary_str(int x, int N_bits){
+    static char b[512];
+    char *p = b;
+    b[0] = '\0';
+
+    for(int i=(N_bits-1); i>=0; i--){
+      *p++ = (x & (1<<i)) ? '1' : '0';
+      if(!(i%4)) *p++ = ' ';
+    }
+    return b;
+}
+
 static void info(void)
 {
     int fd;
@@ -76,6 +88,9 @@ static void info(void)
            (double)litepcie_readl(fd, CSR_XADC_VCCAUX_ADDR) / 4096 * 3);
     printf("FPGA vccbram: %0.2f V\n",
            (double)litepcie_readl(fd, CSR_XADC_VCCBRAM_ADDR) / 4096 * 3);
+#endif
+#ifdef CSR_I2C_BASE
+    printf("XTRX temperature: %s °C\n", int_to_binary_str(litepcie_temp(fd), 32));
 #endif
     close(fd);
 }

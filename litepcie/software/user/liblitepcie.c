@@ -370,3 +370,13 @@ int litepcie_flash_write(int fd,
 }
 
 #endif
+
+#ifdef CSR_I2C_BASE
+
+uint32_t litepcie_temp(int fd) {
+    struct litepcie_ioctl_temp m;
+    checked_ioctl(fd, LITEPCIE_IOCTL_TEMP, &m);
+    return m.val;
+}
+
+#endif
